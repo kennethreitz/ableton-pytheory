@@ -707,14 +707,24 @@ export function renderNotationPage(
 <title>Notation</title>
 <script>${SCRIPT}</script>
 <style>${STYLE}
-  #paper { background: #fff; border-radius: 4px; padding: 8px; }
+  /* abcjs draws with currentColor — without this the notation inherits
+     the dialog's white text and vanishes on the white paper. */
+  #paper {
+    background: #FDFBF7; color: #1A1A1A;
+    border-radius: 6px; padding: 18px 14px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  #paper .abcjs-title { fill: #D98200; }
+  #paper .abcjs-tempo { fill: #777777; }
+  #paper .abcjs-bar { fill: #444444; }
   textarea {
     width: 100%; height: 140px; box-sizing: border-box;
-    background: var(--input-bg); color: var(--text);
+    background: var(--input-bg); color: #9ECE6A;
     border: 1px solid var(--border); border-radius: 3px;
     font-family: monospace; font-size: 11px; padding: 6px;
   }
-  h2 { font-size: 13px; margin: 14px 0 6px; }
+  h2 { font-size: 13px; margin: 14px 0 6px; color: var(--accent); }
+  h2 .dim { color: var(--dim); font-weight: normal; }
 </style>
 </head>
 <body>

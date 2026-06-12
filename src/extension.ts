@@ -7,6 +7,7 @@ import {
   initialize,
   ClipSlot,
   MidiClip,
+  MidiTrack,
   type ActivationContext,
   type ExtensionContext,
   type Handle,
@@ -319,15 +320,7 @@ async function negativeHarmony(context: Context, handle: Handle) {
 
 async function generateMelody(context: Context, handle: Handle) {
   const slot = context.getObjectFromHandle(handle, ClipSlot);
-  if (slot.clip) {
-    await showDialog(
-      context,
-      renderErrorDialog("This clip slot already has a clip — pick an empty one."),
-      420,
-      200,
-    );
-    return;
-  }
+  if (!(await usableMidiSlot(context, slot))) return;
 
   const options = await analyze<Options>("get_options", null);
   const params = await showForm(
@@ -628,15 +621,7 @@ function writeWav(
 
 async function generateProgression(context: Context, handle: Handle) {
   const slot = context.getObjectFromHandle(handle, ClipSlot);
-  if (slot.clip) {
-    await showDialog(
-      context,
-      renderErrorDialog("This clip slot already has a clip — pick an empty one."),
-      420,
-      200,
-    );
-    return;
-  }
+  if (!(await usableMidiSlot(context, slot))) return;
 
   const options = await analyze<Options>("get_options", null);
   const params = await showForm(
@@ -686,15 +671,7 @@ async function generateProgression(context: Context, handle: Handle) {
 
 async function generateScale(context: Context, handle: Handle) {
   const slot = context.getObjectFromHandle(handle, ClipSlot);
-  if (slot.clip) {
-    await showDialog(
-      context,
-      renderErrorDialog("This clip slot already has a clip — pick an empty one."),
-      420,
-      200,
-    );
-    return;
-  }
+  if (!(await usableMidiSlot(context, slot))) return;
 
   const options = await analyze<Options>("get_options", null);
   const params = await showForm(
@@ -715,15 +692,7 @@ async function generateScale(context: Context, handle: Handle) {
 
 async function generateDrums(context: Context, handle: Handle) {
   const slot = context.getObjectFromHandle(handle, ClipSlot);
-  if (slot.clip) {
-    await showDialog(
-      context,
-      renderErrorDialog("This clip slot already has a clip — pick an empty one."),
-      420,
-      200,
-    );
-    return;
-  }
+  if (!(await usableMidiSlot(context, slot))) return;
 
   const options = await analyze<Options>("get_options", null);
   const params = await showForm(context, renderDrumsForm(options), 440, 280);
@@ -850,6 +819,35 @@ async function arpeggiate(context: Context, handle: Handle) {
     420,
     200,
   );
+}
+
+/**
+ * A slot we can generate into: empty, and on a MIDI track. Live's ClipSlot
+ * context menu also appears on audio-track slots, where createMidiClip
+ * fails with an opaque "Failed to create clip".
+ */
+async function usableMidiSlot(
+  context: Context,
+  slot: ClipSlot<typeof API_VERSION>,
+): Promise<boolean> {
+  let message: string | null = null;
+  if (slot.clip) {
+    message = "This clip slot already has a clip — pick an empty one.";
+  } else {
+    try {
+      const parent = slot.parent;
+      if (parent && !(parent instanceof MidiTrack)) {
+        message = "This slot is on an audio track — MIDI clips need a MIDI track.";
+      }
+    } catch {
+      // If the parent can't be resolved, let creation proceed and fail loudly.
+    }
+  }
+  if (message) {
+    await showDialog(context, renderErrorDialog(message), 420, 200);
+    return false;
+  }
+  return true;
 }
 
 async function fillClip(
