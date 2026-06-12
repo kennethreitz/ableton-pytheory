@@ -85,6 +85,25 @@ function writableDir(context: Context): string {
   );
 }
 
+/**
+ * A clip slot on a just-created track. The host may not have populated the
+ * new track's slots yet, so poll briefly instead of failing (or worse,
+ * silently doing nothing).
+ */
+async function slotOnNewTrack(
+  track: { clipSlots: ClipSlot<typeof API_VERSION>[] },
+  sceneIndex: number,
+): Promise<ClipSlot<typeof API_VERSION> | null> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const slots = track.clipSlots;
+    if (slots.length > 0) {
+      return slots[Math.min(sceneIndex, slots.length - 1)] ?? null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
 interface GeneratedClip {
   notes: NoteDescription[];
   length: number;
@@ -425,11 +444,12 @@ async function generateBassline(context: Context, handle: Handle) {
   context.withinTransaction(() => {
     track.name = `${clipName} bass`;
   });
-  const slot = track.clipSlots[sceneIndex] ?? track.clipSlots[0];
+  const slot = await slotOnNewTrack(track, sceneIndex);
   if (!slot) {
-    await showDialog(context, renderErrorDialog("No clip slot available on the new track."), 420, 200);
+    await showDialog(context, renderErrorDialog("The new track reported no clip slots."), 420, 200);
     return;
   }
+  console.log(`pytheory: creating bass clip (${generated.length} beats) at scene ${sceneIndex}`);
   await fillClip(context, slot, {
     ...generated,
     name: `${clipName} ${generated.name}`,
@@ -590,10 +610,14 @@ async function renderAudio(context: Context, handle: Handle) {
       context.withinTransaction(() => {
         track.name = `${clipName} (${instrument})`;
       });
-      const slot = track.clipSlots[0];
-      if (slot) {
-        await slot.createAudioClip({ filePath: imported });
+      const slot = await slotOnNewTrack(track, 0);
+      if (!slot) {
+        throw new Error(
+          "The new audio track reported no clip slots — the rendered file " +
+            `was imported to ${imported}.`,
+        );
       }
+      await slot.createAudioClip({ filePath: imported });
     },
   );
 }
