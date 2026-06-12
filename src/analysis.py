@@ -114,7 +114,44 @@ def detect_chords(notes_json):
         return json.dumps({
             "error": "No chords found — the clip looks monophonic."
         })
-    return json.dumps({"chords": chords, "key": str(key) if key else None})
+    return json.dumps({
+        "chords": chords,
+        "key": str(key) if key else None,
+        "cadences": _cadences(chords),
+    })
+
+
+def _cadences(chords):
+    """Label cadential motion between consecutive chords."""
+    def base(numeral):
+        return numeral.rstrip("7").lstrip("b#").upper() if numeral else None
+
+    cadences = []
+    for prev, cur in zip(chords, chords[1:]):
+        a, b = base(prev["numeral"]), base(cur["numeral"])
+        if not a or not b:
+            continue
+        kind = None
+        if a == "V" and b == "I":
+            kind = "authentic"
+        elif a == "IV" and b == "I":
+            kind = "plagal"
+        elif a == "V" and b == "VI":
+            kind = "deceptive"
+        if kind:
+            cadences.append({
+                "bar": int(cur["start"] // 4) + 1,
+                "type": kind,
+                "motion": f"{prev['numeral']} → {cur['numeral']}",
+            })
+    last = chords[-1]
+    if base(last["numeral"]) == "V":
+        cadences.append({
+            "bar": int(last["start"] // 4) + 1,
+            "type": "half",
+            "motion": f"ends on {last['numeral']}",
+        })
+    return cadences
 
 
 def _random_numerals(length):
@@ -604,18 +641,39 @@ def analyze_melody(notes_json):
         return "?"
 
     notes.sort(key=lambda n: (n["startTime"], n["pitch"]))
+
+    def chromatic_role(i):
+        """How an out-of-scale note moves: passing, neighbor, or free."""
+        prev = notes[i - 1]["pitch"] if i > 0 else None
+        nxt = notes[i + 1]["pitch"] if i + 1 < len(notes) else None
+        pitch = notes[i]["pitch"]
+        if prev is None or nxt is None:
+            return "chromatic"
+        approach = pitch - prev
+        departure = nxt - pitch
+        if abs(approach) <= 2 and abs(departure) <= 2:
+            if prev == nxt:
+                return "neighbor"
+            if approach * departure > 0:
+                return "passing"
+        return "chromatic"
+
     rows = []
     histogram = {}
     in_scale = 0
-    for note in notes:
+    for i, note in enumerate(notes):
         pc = note["pitch"] % 12
         label = degree_label(pc)
         if pc in degrees:
             in_scale += 1
+            role = None
+        else:
+            role = chromatic_role(i)
         histogram[label] = histogram.get(label, 0) + 1
         rows.append({
             "name": str(Tone.from_midi(note["pitch"])),
             "degree": label,
+            "role": role,
             "start": note["startTime"],
         })
 
@@ -719,6 +777,185 @@ def generate_melody(payload_json):
         "length": total,
         "name": f"{tonic} {scale_name} melody",
     })
+
+
+def invert_notes(payload_json):
+    """Mirror the melody around its first note — diatonically when in key."""
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    sounding = [n for n in notes if not n.get("muted")]
+    if not sounding:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    key = Key.detect(*_note_names(n["pitch"] for n in sounding))
+    degrees = _scale_degrees(key.tonic_name, key.mode) if key else None
+    ordered = sorted(sounding, key=lambda n: (n["startTime"], n["pitch"]))
+    pivot = ordered[0]["pitch"]
+
+    def scale_index(pitch):
+        """Position of an in-scale pitch on the infinite scale ladder."""
+        pc = pitch % 12
+        if degrees is None or pc not in degrees:
+            return None
+        return (pitch // 12) * len(degrees) + degrees.index(pc)
+
+    def from_scale_index(index):
+        octave, degree = divmod(index, len(degrees))
+        return octave * 12 + degrees[degree]
+
+    pivot_index = scale_index(pivot)
+
+    changed = 0
+    inverted = []
+    for note in notes:
+        new = dict(note)
+        if not note.get("muted"):
+            index = scale_index(note["pitch"])
+            if pivot_index is not None and index is not None:
+                new_pitch = from_scale_index(2 * pivot_index - index)
+            else:
+                new_pitch = 2 * pivot - note["pitch"]  # chromatic fallback
+            new_pitch = min(127, max(0, new_pitch))
+            if new_pitch != note["pitch"]:
+                new["pitch"] = new_pitch
+                changed += 1
+        inverted.append(new)
+
+    return json.dumps({"notes": inverted, "changed": changed})
+
+
+def retrograde_notes(payload_json):
+    """Reverse the clip in time."""
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    sounding = [n for n in notes if not n.get("muted")]
+    if not sounding:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    start = min(n["startTime"] for n in sounding)
+    end = max(n["startTime"] + n["duration"] for n in sounding)
+
+    reversed_notes = []
+    for note in notes:
+        new = dict(note)
+        if not note.get("muted"):
+            new["startTime"] = round(
+                start + (end - (note["startTime"] + note["duration"])), 6
+            )
+        reversed_notes.append(new)
+
+    return json.dumps({"notes": reversed_notes, "changed": len(sounding)})
+
+
+def generate_sketch(payload_json):
+    """A four-part sketch: chords, bassline, melody, and drums."""
+    params = json.loads(payload_json)
+    tonic = params["tonic"]
+    mode = params["mode"]
+    progression_name = params.get("progression", "random")
+    drum_pattern = params.get("drumPattern", "house")
+    beats = float(params.get("beatsPerChord", 4))
+
+    if progression_name == "random":
+        numerals = _random_numerals(4)
+    else:
+        numerals = list(PROGRESSIONS.get(progression_name, ()))
+        if not numerals:
+            return json.dumps({"error": f"Unknown progression: {progression_name}"})
+
+    chords = json.loads(generate_progression(json.dumps({
+        "tonic": tonic, "mode": mode, "numerals": numerals,
+        "octave": 4, "beatsPerChord": beats,
+    })))
+    if chords.get("error"):
+        return json.dumps(chords)
+    length = chords["length"]
+
+    bass = json.loads(generate_bassline(json.dumps({
+        "notes": chords["notes"], "style": "root-fifth", "octave": 2,
+    })))
+    melody = json.loads(generate_melody(json.dumps({
+        "tonic": tonic, "scale": mode, "octave": 5,
+        "bars": max(1, int(length // 4)), "density": "medium",
+    })))
+
+    try:
+        pattern_beats = Pattern.preset(drum_pattern).beats
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Unknown drum pattern: {e}"})
+    drums = json.loads(generate_drums(json.dumps({
+        "pattern": drum_pattern,
+        "repeats": max(1, round(length / pattern_beats)),
+    })))
+
+    parts = {"chords": chords, "bass": bass, "melody": melody, "drums": drums}
+    for name, part in parts.items():
+        if part.get("error"):
+            return json.dumps({"error": f"{name}: {part['error']}"})
+
+    return json.dumps({
+        "name": chords["name"],
+        "key": f"{tonic} {mode}",
+        "parts": parts,
+    })
+
+
+def _beats(duration):
+    """Beats from a Duration enum or _RawDuration."""
+    beats = getattr(duration, "beats", None)
+    if beats is not None:
+        return float(beats)
+    return float(getattr(duration, "value", duration))
+
+
+def audio_to_midi(payload_json):
+    """Transcribe a WAV file (in the virtual FS) into MIDI parts."""
+    params = json.loads(payload_json)
+    path = params["path"]
+    bpm = params.get("bpm")
+    quantize = params.get("quantize") or None
+    split = bool(params.get("split"))
+
+    from pytheory.audio import transcribe
+
+    try:
+        score = transcribe(
+            path,
+            bpm=float(bpm) if bpm else None,
+            quantize=float(quantize) if quantize else None,
+            split=split,
+        )
+    except Exception as e:  # audio decoding/analysis can fail many ways
+        return json.dumps({"error": f"Transcription failed: {e}"})
+
+    parts = {}
+    for name, part in score.parts.items():
+        position = 0.0
+        notes = []
+        for note in part.notes:
+            beats = _beats(note.duration)
+            tone = getattr(note, "tone", None)
+            midi = getattr(tone, "midi", None) if tone is not None else None
+            if midi is not None:
+                notes.append({
+                    "pitch": int(midi),
+                    "startTime": round(position, 6),
+                    "duration": round(beats, 6),
+                    "velocity": int(getattr(note, "velocity", 100)),
+                })
+            position += beats
+        if notes:
+            parts[name] = {
+                "notes": notes,
+                "length": round(position, 6),
+                "name": name,
+            }
+
+    if not parts:
+        return json.dumps({
+            "error": "No pitched material detected in this audio."
+        })
+    return json.dumps({"parts": parts, "bpm": score.bpm})
 
 
 def transpose_to_key(payload_json):

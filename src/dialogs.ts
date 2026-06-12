@@ -16,6 +16,7 @@ export interface ChordsResult {
     symbol: string | null;
     numeral: string | null;
   }[];
+  cadences: { bar: number; type: string; motion: string }[];
 }
 
 export interface Options {
@@ -197,13 +198,26 @@ export function renderChordsDialog(
     )
     .join("");
   const keyNote = result.key ? ` — key of ${result.key}` : "";
+  const cadences = result.cadences?.length
+    ? `<p style="color: var(--accent); margin: 12px 0 4px;">Cadences</p>
+       <table>${result.cadences
+         .map(
+           (c) => `<tr>
+             <td class="dim">bar ${c.bar}</td>
+             <td>${escapeHtml(c.type)}</td>
+             <td class="dim">${escapeHtml(c.motion)}</td>
+           </tr>`,
+         )
+         .join("")}</table>`
+    : "";
   return infoPage(
     "Chord Detection",
     `${clipName} — ${result.chords.length} chords${keyNote}`,
     `<table>
        <tr><th>Bar</th><th>Chord</th><th>Numeral</th><th>Notes</th></tr>
        ${rows}
-     </table>`,
+     </table>
+     ${cadences}`,
   );
 }
 
@@ -477,7 +491,7 @@ export interface MelodyAnalysis {
   low: string;
   high: string;
   histogram: [string, number][];
-  rows: { name: string; degree: string; start: number }[];
+  rows: { name: string; degree: string; role: string | null; start: number }[];
   truncated: number;
 }
 
@@ -494,6 +508,7 @@ export function renderMelodyAnalysisDialog(
         <td class="dim">${(1 + r.start / 4).toFixed(2)}</td>
         <td>${escapeHtml(r.name)}</td>
         <td>${escapeHtml(r.degree)}</td>
+        <td class="dim">${r.role ? escapeHtml(r.role) : ""}</td>
       </tr>`,
     )
     .join("");
@@ -507,7 +522,7 @@ export function renderMelodyAnalysisDialog(
         range ${escapeHtml(result.low)}–${escapeHtml(result.high)}</p>
      <p class="dim">Degrees: ${escapeHtml(histogram)}</p>
      <table>
-       <tr><th>Bar</th><th>Note</th><th>Degree</th></tr>
+       <tr><th>Bar</th><th>Note</th><th>Degree</th><th>Role</th></tr>
        ${rows}
      </table>
      ${truncated}`,
@@ -651,6 +666,63 @@ export function renderRenderAudioForm(options: Options): string {
     "Renders this clip with pytheory's synth engine onto a new audio track.",
     fields,
     "Render",
+  );
+}
+
+export function renderSketchForm(
+  options: Options,
+  defaults: KeyDefaults,
+): string {
+  const progressionChoices = [
+    { value: "random", label: "Surprise me (random walk)" },
+    ...Object.entries(options.progressions).map(([name, numerals]) => ({
+      value: name,
+      label: `${name}  (${numerals.join(" ")})`,
+    })),
+  ];
+  const fields = [
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
+    field("Mode", select("mode", options.scales.map((value) => ({ value })), defaults.scale)),
+    field("Progression", select("progression", progressionChoices, "random")),
+    field(
+      "Drums",
+      select("drumPattern", options.drumPatterns.map((value) => ({ value })), "house"),
+    ),
+  ].join("");
+  return formPage(
+    "Generate Song Sketch",
+    keySubtitle(
+      "Creates four tracks at this scene: chords, bass, melody, and drums.",
+      defaults,
+    ),
+    fields,
+    "Generate",
+  );
+}
+
+export function renderAudioToMidiForm(): string {
+  const fields = [
+    field(
+      "Mode",
+      select("split", [
+        { value: "", label: "Single melody line" },
+        { value: "yes", label: "Split bass + melody (full mixes)" },
+      ], ""),
+    ),
+    field(
+      "Quantize",
+      select("quantize", [
+        { value: "", label: "As performed" },
+        { value: "0.25", label: "16th notes" },
+        { value: "0.5", label: "8th notes" },
+      ], "0.25"),
+    ),
+  ].join("");
+  return formPage(
+    "Convert to MIDI",
+    "Transcribes this audio clip onto new MIDI tracks (pitched material only).",
+    fields,
+    "Convert",
   );
 }
 

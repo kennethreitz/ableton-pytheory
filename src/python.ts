@@ -74,7 +74,11 @@ export type AnalysisFunction =
   | "generate_melody"
   | "generate_from_symbols"
   | "generate_bassline"
-  | "notation";
+  | "notation"
+  | "invert_notes"
+  | "retrograde_notes"
+  | "generate_sketch"
+  | "audio_to_midi";
 
 /** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(

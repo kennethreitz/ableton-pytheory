@@ -64,10 +64,18 @@ let scipyLoaded: Promise<unknown> | null = null;
 parentPort!.on("message", async ({ id, fn, payload }: Request) => {
   try {
     const py = await pythonPromise;
-    if (fn === "render_audio") {
-      // The synth engine's effects need scipy; load it on first render only.
+    if (fn === "render_audio" || fn === "audio_to_midi") {
+      // The synth engine and audio analysis need scipy; load lazily.
       scipyLoaded ??= py.loadPackage("scipy");
       await scipyLoaded;
+    }
+    if (fn === "audio_to_midi") {
+      // Pyodide can't see the host filesystem — copy the audio file into
+      // the virtual FS and rewrite the path before calling Python.
+      const request = JSON.parse(payload);
+      py.FS.mkdirTree("/audio");
+      py.FS.writeFile("/audio/input.wav", fs.readFileSync(request.hostPath));
+      payload = JSON.stringify({ ...request, path: "/audio/input.wav" });
     }
     const result = py.globals.get(fn)(payload) as string;
     parentPort!.postMessage({ id, result });

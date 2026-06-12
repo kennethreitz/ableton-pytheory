@@ -12,9 +12,14 @@ Right-click a **MIDI clip**:
   candidates ranked by fitness.
 - **Detect Chords** — clusters notes by onset, names each chord
   (`D minor 7th`), gives its lead-sheet symbol (`Dm7`) and Roman numeral
-  function in the detected key (`ii`).
+  function in the detected key (`ii`), and labels cadences (authentic,
+  plagal, deceptive, half).
 - **Analyze Melody** — every note's scale degree in the detected key, plus
-  range, degree histogram, and how diatonic the line is.
+  range, degree histogram, how diatonic the line is, and the role of each
+  chromatic note (passing, neighbor, or free).
+- **Invert Melody / Retrograde** — classic motivic transforms: mirror the
+  line around its first note (diatonically when in key) or reverse it in
+  time. Both are their own inverse — run twice to get back.
 - **Suggest Next Chord** — ranks likely continuations of the clip's last
   chord using transition statistics mined from pytheory's progression corpus.
 - **Chord Substitutions** — relative/parallel swaps, tritone substitutions,
@@ -56,6 +61,17 @@ Right-click an empty **clip slot**:
 - **Generate Drum Pattern…** — 100 preset patterns (house, bossa nova,
   teental, drum and bass, second line…) with 37 optional fills, written to
   the General MIDI drum map.
+
+Right-click a **scene**:
+
+- **Generate Song Sketch…** — one click, four new tracks at that scene:
+  chords, bassline, melody, and drums, all in your chosen (or the Set's) key.
+
+Right-click an **audio clip**:
+
+- **Convert to MIDI…** — transcribes the audio with pytheory's pitch
+  tracker onto new MIDI tracks. Optionally splits full mixes into bass and
+  melody parts, with quantization to taste.
 
 ## How it works
 

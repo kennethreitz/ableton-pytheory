@@ -5,9 +5,12 @@ import { pathToFileURL } from "node:url";
 
 import {
   initialize,
+  AudioClip,
+  AudioTrack,
   ClipSlot,
   MidiClip,
   MidiTrack,
+  Scene,
   type ActivationContext,
   type ExtensionContext,
   type Handle,
@@ -17,6 +20,7 @@ import {
 import { analyze, getPython } from "./python.js";
 import {
   renderArpeggiateForm,
+  renderAudioToMidiForm,
   renderBasslineForm,
   renderChordsDialog,
   renderConformForm,
@@ -31,6 +35,7 @@ import {
   renderProgressionForm,
   renderRenderAudioForm,
   renderScaleForm,
+  renderSketchForm,
   renderSubstitutionsDialog,
   renderSuggestionsDialog,
   renderTabsDialog,
@@ -137,14 +142,29 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Conform to Scale…", "pytheory.conform", conformToScale],
     ["MidiClip", "Transpose to Key…", "pytheory.transpose", transposeToKey],
     ["MidiClip", "Smooth Voicings", "pytheory.smooth-voicings", smoothVoicings],
+    ["MidiClip", "Invert Melody", "pytheory.invert", invertMelody],
+    ["MidiClip", "Retrograde", "pytheory.retrograde", retrogradeClip],
     ["MidiClip", "Render to Audio…", "pytheory.render-audio", renderAudio],
     ["ClipSlot", "Generate Progression…", "pytheory.generate-progression", generateProgression],
     ["ClipSlot", "Generate Scale…", "pytheory.generate-scale", generateScale],
     ["ClipSlot", "Generate Drum Pattern…", "pytheory.generate-drums", generateDrums],
     ["ClipSlot", "Generate Melody…", "pytheory.generate-melody", generateMelody],
   ];
+  const sceneCommands: [label: string, id: string,
+    run: (context: Context, handle: Handle) => Promise<void>][] = [
+    ["Generate Song Sketch…", "pytheory.sketch", generateSketch],
+  ];
+  const audioCommands: [label: string, id: string,
+    run: (context: Context, handle: Handle) => Promise<void>][] = [
+    ["Convert to MIDI…", "pytheory.audio-to-midi", audioToMidi],
+  ];
 
-  for (const [scope, label, id, run] of commands) {
+  const register = (
+    scope: "MidiClip" | "ClipSlot" | "Scene" | "AudioClip",
+    label: string,
+    id: string,
+    run: (context: Context, handle: Handle) => Promise<void>,
+  ) => {
     context.commands.registerCommand(id, (handle) => {
       run(context, handle as Handle).catch(async (error) => {
         console.error(`pytheory: ${id} failed:`, error);
@@ -152,7 +172,10 @@ export function activate(activation: ActivationContext) {
       });
     });
     context.ui.registerContextMenuAction(scope, label, id);
-  }
+  };
+  for (const [scope, label, id, run] of commands) register(scope, label, id, run);
+  for (const [label, id, run] of sceneCommands) register("Scene", label, id, run);
+  for (const [label, id, run] of audioCommands) register("AudioClip", label, id, run);
 
   console.log("pytheory extension activated.");
 }
@@ -456,6 +479,201 @@ async function generateBassline(context: Context, handle: Handle) {
   });
 }
 
+async function applyTransform(
+  context: Context,
+  handle: Handle,
+  fn: "invert_notes" | "retrograde_notes",
+  title: string,
+  describe: (changed: number) => string,
+) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+  const result = await analyze<{ notes: NoteDescription[]; changed: number }>(
+    fn,
+    { notes },
+  );
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+  context.withinTransaction(() => {
+    clip.notes = result.notes;
+  });
+  await showDialog(
+    context,
+    renderMessageDialog(title, describe(result.changed)),
+    420,
+    200,
+  );
+}
+
+function invertMelody(context: Context, handle: Handle) {
+  return applyTransform(
+    context,
+    handle,
+    "invert_notes",
+    "Invert Melody",
+    (changed) =>
+      `Mirrored ${changed} ${changed === 1 ? "note" : "notes"} around the first note (diatonically where in key). Run again to undo musically.`,
+  );
+}
+
+function retrogradeClip(context: Context, handle: Handle) {
+  return applyTransform(
+    context,
+    handle,
+    "retrograde_notes",
+    "Retrograde",
+    () => "Reversed the clip in time. Run again to restore the original order.",
+  );
+}
+
+interface SketchResult {
+  name: string;
+  key: string;
+  parts: Record<"chords" | "bass" | "melody" | "drums", GeneratedClip>;
+}
+
+async function generateSketch(context: Context, handle: Handle) {
+  const scene = context.getObjectFromHandle(handle, Scene);
+  const song = context.application.song;
+  const sceneIndex = Math.max(
+    0,
+    song.scenes.findIndex((s) => s === scene),
+  );
+
+  const options = await analyze<Options>("get_options", null);
+  const params = await showForm(
+    context,
+    renderSketchForm(options, songKey(context, options)),
+    480,
+    320,
+  );
+  if (!params) return;
+
+  const sketch = (await context.ui.withinProgressDialog(
+    "Sketching…",
+    {},
+    () => analyze<SketchResult>("generate_sketch", params),
+  )) as SketchResult & { error?: string };
+  if (sketch.error) {
+    await showDialog(context, renderErrorDialog(sketch.error), 420, 200);
+    return;
+  }
+
+  await context.ui.withinProgressDialog(
+    `Building tracks for ${sketch.name}…`,
+    {},
+    async (update) => {
+      const order = ["chords", "bass", "melody", "drums"] as const;
+      for (let i = 0; i < order.length; i++) {
+        const partName = order[i];
+        await update(`Creating ${partName} track…`, (i / order.length) * 100);
+        const track = await song.createMidiTrack();
+        context.withinTransaction(() => {
+          track.name = `${sketch.key} ${partName}`;
+        });
+        const slot = await slotOnNewTrack(track, sceneIndex);
+        if (!slot) throw new Error(`The new ${partName} track reported no clip slots.`);
+        await fillClip(context, slot, sketch.parts[partName]);
+      }
+    },
+  );
+}
+
+interface TranscriptionResult {
+  parts: Record<string, GeneratedClip>;
+  bpm: number;
+}
+
+async function audioToMidi(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, AudioClip);
+  const clipName = clip.name;
+  const song = context.application.song;
+
+  // Find a WAV to transcribe: the clip's own file when it's a WAV,
+  // otherwise render the arrangement region pre-FX (which yields a WAV).
+  let wavPath = clip.filePath;
+  if (!/\.wav$/i.test(wavPath)) {
+    const parent = clip.parent;
+    if (parent instanceof AudioTrack && clip.endTime > clip.startTime) {
+      wavPath = (await context.ui.withinProgressDialog(
+        "Rendering audio…",
+        {},
+        () =>
+          context.resources.renderPreFxAudio(
+            parent,
+            clip.startTime,
+            clip.endTime,
+          ),
+      )) as string;
+    } else {
+      await showDialog(
+        context,
+        renderErrorDialog(
+          "Only WAV files can be transcribed directly. For other formats, place the clip in the Arrangement so its audio can be rendered first.",
+        ),
+        460,
+        220,
+      );
+      return;
+    }
+  }
+
+  const params = await showForm(context, renderAudioToMidiForm(), 460, 260);
+  if (!params) return;
+
+  const result = (await context.ui.withinProgressDialog(
+    "Transcribing audio…",
+    {},
+    () =>
+      analyze<TranscriptionResult>("audio_to_midi", {
+        hostPath: wavPath,
+        bpm: song.tempo,
+        quantize: params.quantize || null,
+        split: Boolean(params.split),
+      }),
+  )) as TranscriptionResult & { error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 460, 220);
+    return;
+  }
+
+  // Place each transcribed part on a new MIDI track, at the source
+  // clip's scene when it lives in the Session grid.
+  let sceneIndex = 0;
+  for (const track of song.tracks) {
+    const index = track.clipSlots.findIndex((slot) => {
+      try {
+        return slot.clip === clip;
+      } catch {
+        return false;
+      }
+    });
+    if (index >= 0) {
+      sceneIndex = index;
+      break;
+    }
+  }
+
+  for (const [partName, part] of Object.entries(result.parts)) {
+    const track = await song.createMidiTrack();
+    context.withinTransaction(() => {
+      track.name = `${clipName} ${partName} (MIDI)`;
+    });
+    const slot = await slotOnNewTrack(track, sceneIndex);
+    if (!slot) throw new Error(`The new ${partName} track reported no clip slots.`);
+    await fillClip(context, slot, {
+      ...part,
+      name: `${clipName} ${partName}`,
+    });
+  }
+}
+
 async function transposeToKey(context: Context, handle: Handle) {
   const clip = context.getObjectFromHandle(handle, MidiClip);
   const notes = clip.notes;
@@ -640,6 +858,8 @@ function writeWav(
   header.writeUInt32LE(sampleRate * channels * 2, 28); // byte rate
   header.writeUInt16LE(channels * 2, 32); // block align
   header.writeUInt16LE(16, 34); // bits per sample
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
   fs.writeFileSync(filePath, Buffer.concat([header, pcm]));
 }
 
