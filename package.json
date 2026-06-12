@@ -1,6 +1,6 @@
 {
   "name": "pytheory",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "main": "dist/extension.js",
   "engines": {
     "node": ">=24.14.1"
@@ -10,7 +10,7 @@
     "build": "tsc --noEmit && tsx build.ts --production",
     "build:dev": "tsc --noEmit && tsx build.ts",
     "start": "npm run build:dev && extensions-cli run --storage-directory .dev/storage --temp-directory .dev/tmp",
-    "package": "npm run build && extensions-cli package -i dist/pyodide -i dist/pytheory -i dist/python-worker.mjs"
+    "package": "npm run build && extensions-cli package -i dist/pyodide -i dist/pytheory -i dist/python-worker.mjs -i dist/abcjs.js"
   },
   "dependencies": {
     "@ableton-extensions/sdk": "file:vendor/ableton-extensions-sdk-1.0.0-beta.0.tgz",
