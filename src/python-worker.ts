@@ -139,7 +139,29 @@ async function handleRequest({ id, fn, payload }: Request) {
   }
 }
 
+const permission = (
+  process as unknown as { permission?: { has(name: string): boolean } }
+).permission;
+console.error(
+  `pytheory runtime: ${parentPort ? "worker" : "child"} mode, ` +
+    `permission model ${permission ? "ON" : "off"}`,
+);
+
+function describeError(error: unknown): string {
+  const e = error as NodeJS.ErrnoException & {
+    permission?: string;
+    resource?: string;
+  };
+  let message = String(error);
+  if (e.permission) message += ` [permission: ${e.permission}]`;
+  if (e.resource) message += ` [resource: ${e.resource}]`;
+  return message;
+}
+
 // Tell the main thread we exist; it resolves readiness on first reply anyway.
 pythonPromise
   .then(() => send({ ready: true }))
-  .catch((error) => send({ bootError: String(error) }));
+  .catch((error) => {
+    console.error("boot failure:", (error as Error).stack ?? error);
+    send({ bootError: describeError(error) });
+  });

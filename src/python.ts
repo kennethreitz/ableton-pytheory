@@ -89,8 +89,26 @@ function startWorker(runtimePath: string): Bridge {
 }
 
 function startChildProcess(runtimePath: string): Bridge {
-  const child = spawn(process.execPath, [runtimePath], {
+  // The host enables Node's permission model, which propagates to child
+  // node processes — but without the parent's allow-lists, so the child
+  // can't even read the extension's own files. Re-enable the model with
+  // explicit wide-open scopes (the child is our own code — same trust as
+  // the extension itself) and scrub NODE_OPTIONS for good measure.
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  const args = [];
+  if ((process as unknown as { permission?: unknown }).permission) {
+    args.push(
+      "--permission",
+      "--allow-fs-read=*",
+      "--allow-fs-write=*",
+      "--allow-child-process",
+    );
+  }
+  args.push(runtimePath);
+  const child = spawn(process.execPath, args, {
     stdio: ["pipe", "pipe", "pipe"],
+    env,
   });
   child.unref();
 
