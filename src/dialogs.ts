@@ -229,6 +229,7 @@ export function renderProgressionForm(
       label: `${name}  (${numerals.join(" ")})`,
     })),
     { value: "custom", label: "Custom…" },
+    { value: "random", label: "Surprise me (random walk)" },
   ];
   const fields = [
     field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
@@ -399,6 +400,7 @@ export function renderConformForm(
 export interface TabsResult {
   instrument: string;
   key: string | null;
+  scaleDiagram: string | null;
   chords: { symbol: string; tab: string | null; bars: number[] }[];
 }
 
@@ -437,6 +439,10 @@ export function renderTabsDialog(clipName: string, result: TabsResult): string {
     })
     .join("");
   const keyNote = result.key ? ` — key of ${result.key}` : "";
+  const diagram = result.scaleDiagram
+    ? `<p class="chord-name">${escapeHtml(result.key ?? "")} scale</p>
+       <pre class="tab diagram">${escapeHtml(result.scaleDiagram)}</pre>`
+    : "";
   return infoPage(
     `${result.instrument[0].toUpperCase()}${result.instrument.slice(1)} Tabs`,
     `${clipName}${keyNote}`,
@@ -448,9 +454,158 @@ export function renderTabsDialog(clipName: string, result: TabsResult): string {
        }
        .chord-name { color: var(--accent); font-size: 15px; margin: 0 0 6px; }
        .tab { font-family: monospace; font-size: 12px; line-height: 1.5; margin: 0; }
+       .diagram { overflow-x: auto; margin-bottom: 14px; }
        .card .dim { margin: 6px 0 0; font-size: 11px; }
      </style>
+     ${diagram}
      <div class="cards">${cards}</div>`,
+  );
+}
+
+export interface MelodyAnalysis {
+  key: string;
+  noteCount: number;
+  inScalePercent: number;
+  low: string;
+  high: string;
+  histogram: [string, number][];
+  rows: { name: string; degree: string; start: number }[];
+  truncated: number;
+}
+
+export function renderMelodyAnalysisDialog(
+  clipName: string,
+  result: MelodyAnalysis,
+): string {
+  const histogram = result.histogram
+    .map(([degree, count]) => `${degree}×${count}`)
+    .join("  ");
+  const rows = result.rows
+    .map(
+      (r) => `<tr>
+        <td class="dim">${(1 + r.start / 4).toFixed(2)}</td>
+        <td>${escapeHtml(r.name)}</td>
+        <td>${escapeHtml(r.degree)}</td>
+      </tr>`,
+    )
+    .join("");
+  const truncated = result.truncated
+    ? `<p class="dim">…and ${result.truncated} more notes.</p>`
+    : "";
+  return infoPage(
+    "Melody Analysis",
+    `${clipName} — key of ${result.key}`,
+    `<p>${result.noteCount} notes, ${result.inScalePercent}% in scale,
+        range ${escapeHtml(result.low)}–${escapeHtml(result.high)}</p>
+     <p class="dim">Degrees: ${escapeHtml(histogram)}</p>
+     <table>
+       <tr><th>Bar</th><th>Note</th><th>Degree</th></tr>
+       ${rows}
+     </table>
+     ${truncated}`,
+  );
+}
+
+export interface SuggestionsResult {
+  key: string;
+  lastChord: { symbol: string; numeral: string };
+  suggestions: { numeral: string; symbol: string; notes: string[]; count: number }[];
+}
+
+export function renderSuggestionsDialog(result: SuggestionsResult): string {
+  const rows = result.suggestions
+    .map(
+      (s) => `<tr>
+        <td>${escapeHtml(s.symbol)}</td>
+        <td>${escapeHtml(s.numeral)}</td>
+        <td class="dim">${s.notes.map(escapeHtml).join(" ")}</td>
+        <td class="dim">${s.count > 0 ? `seen ${s.count}×` : "diatonic"}</td>
+      </tr>`,
+    )
+    .join("");
+  return infoPage(
+    "Suggest Next Chord",
+    `Key of ${result.key} — after ${result.lastChord.symbol} (${result.lastChord.numeral})`,
+    `<table>
+       <tr><th>Chord</th><th>Numeral</th><th>Notes</th><th>Why</th></tr>
+       ${rows}
+     </table>
+     <p class="dim">Ranked by how often this move appears in pytheory's progression corpus.</p>`,
+  );
+}
+
+export interface SubstitutionsResult {
+  key: string | null;
+  chords: {
+    symbol: string;
+    substitutions: { symbol: string; reason: string }[];
+  }[];
+}
+
+export function renderSubstitutionsDialog(
+  clipName: string,
+  result: SubstitutionsResult,
+): string {
+  const sections = result.chords
+    .map((c) => {
+      const subs = c.substitutions
+        .map(
+          (s) => `<tr>
+            <td>${escapeHtml(s.symbol)}</td>
+            <td class="dim">${escapeHtml(s.reason)}</td>
+          </tr>`,
+        )
+        .join("");
+      return `<p class="chord-head">${escapeHtml(c.symbol)}</p>
+        <table>${subs}</table>`;
+    })
+    .join("");
+  const keyNote = result.key ? ` — key of ${result.key}` : "";
+  return infoPage(
+    "Chord Substitutions",
+    `${clipName}${keyNote}`,
+    `<style>
+       .chord-head { color: var(--accent); font-size: 15px; margin: 10px 0 4px; }
+       .chord-head:first-child { margin-top: 0; }
+     </style>
+     ${sections}`,
+  );
+}
+
+export function renderMelodyForm(
+  options: Options,
+  defaults: KeyDefaults,
+): string {
+  const fields = [
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
+    field("Scale", select("scale", options.scales.map((value) => ({ value })), defaults.scale)),
+    field("Octave", select("octave", OCTAVES, "4")),
+    field(
+      "Bars",
+      select("bars", [
+        { value: "1" },
+        { value: "2" },
+        { value: "4" },
+        { value: "8" },
+      ], "4"),
+    ),
+    field(
+      "Density",
+      select("density", [
+        { value: "sparse", label: "Sparse (quarters and halves)" },
+        { value: "medium", label: "Medium (eighths)" },
+        { value: "busy", label: "Busy (sixteenths)" },
+      ], "medium"),
+    ),
+  ].join("");
+  return formPage(
+    "Generate Melody",
+    keySubtitle(
+      "Creates a random melody: stepwise motion, occasional leaps, ends on the tonic.",
+      defaults,
+    ),
+    fields,
+    "Generate",
   );
 }
 

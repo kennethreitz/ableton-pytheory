@@ -7,6 +7,7 @@ Extensions SDK: pitch, startTime, duration, muted, ...
 
 import base64
 import json
+import random
 
 from pytheory import Chord, Fretboard, Key, Tone, TonedScale, render_score
 from pytheory.rhythm import INSTRUMENTS, Pattern, Score, _RawDuration
@@ -116,13 +117,34 @@ def detect_chords(notes_json):
     return json.dumps({"chords": chords, "key": str(key) if key else None})
 
 
+def _random_numerals(length):
+    """Random walk through the transition graph mined from PROGRESSIONS."""
+    rng = random.Random()
+    transitions = _transitions()
+    current = rng.choice(["I", "I", "i", "vi", "IV"])  # weighted toward home
+    sequence = [current]
+    for _ in range(length - 1):
+        choices = transitions.get(current)
+        if choices:
+            current = rng.choices(
+                list(choices), weights=list(choices.values())
+            )[0]
+        else:
+            current = rng.choice(["I", "IV", "V", "vi", "ii"])
+        sequence.append(current)
+    return sequence
+
+
 def generate_progression(payload_json):
     params = json.loads(payload_json)
     tonic = params["tonic"]
     mode = params["mode"]
-    numerals = [n for n in params["numerals"] if n]
     octave = int(params.get("octave", 4))
     beats = float(params.get("beatsPerChord", 4))
+    if params.get("random"):
+        numerals = _random_numerals(int(params.get("length", 4)))
+    else:
+        numerals = [n for n in params["numerals"] if n]
 
     if not numerals:
         return json.dumps({"error": "No chords in the progression."})
@@ -262,15 +284,26 @@ def guitar_tabs(payload_json):
                 pass
         found[symbol] = {"symbol": symbol, "tab": tab, "bars": [bar]}
 
-    if not found:
-        return json.dumps({
-            "error": "No chords found — the clip looks monophonic."
-        })
-
     key = Key.detect(*_note_names(n["pitch"] for n in notes))
+
+    # Fretboard map of the detected key's scale — this also makes tabs
+    # useful for melodic (chord-free) clips.
+    diagram = None
+    if key:
+        try:
+            scale = TonedScale(tonic=f"{key.tonic_name}4")[key.mode]
+            diagram = fretboard.scale_diagram(scale, frets=12)
+        except (KeyError, ValueError):
+            pass
+
+    if not found and not diagram:
+        return json.dumps({
+            "error": "No chords found, and no key detected for a scale map."
+        })
     return json.dumps({
         "instrument": instrument,
         "key": str(key) if key else None,
+        "scaleDiagram": diagram,
         "chords": list(found.values()),
     })
 
@@ -421,6 +454,271 @@ def arpeggiate(payload_json):
             "error": "No chords to arpeggiate — the clip looks monophonic."
         })
     return json.dumps({"notes": result, "arpeggiated": arpeggiated})
+
+
+def _transitions():
+    """Chord-to-chord transition counts mined from the progression corpus."""
+    counts = {}
+    for numerals in PROGRESSIONS.values():
+        pairs = list(zip(numerals, numerals[1:])) + [(numerals[-1], numerals[0])]
+        for a, b in pairs:
+            counts.setdefault(a, {})
+            counts[a][b] = counts[a].get(b, 0) + 1
+    return counts
+
+
+def _chord_for_numeral(key, numeral):
+    try:
+        chord = key.progression(numeral)[0]
+        return _chord_label(chord), [str(t) for t in chord.tones]
+    except (KeyError, ValueError, IndexError):
+        return None, []
+
+
+def suggest_next_chord(notes_json):
+    notes = [n for n in json.loads(notes_json) if not n.get("muted")]
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    key = Key.detect(*_note_names(n["pitch"] for n in notes))
+    if not key:
+        return json.dumps({"error": "Couldn't detect a key for this clip."})
+
+    clusters = [
+        c for c in _cluster_chords(notes)
+        if len({n["pitch"] % 12 for n in c["notes"]}) >= 2
+    ]
+    if not clusters:
+        return json.dumps({"error": "No chords found to continue from."})
+
+    last = Chord([
+        Tone.from_midi(p)
+        for p in sorted({n["pitch"] for n in clusters[-1]["notes"]})
+    ])
+    numeral = last.analyze(key.tonic_name, key.mode)
+    if not numeral:
+        return json.dumps({
+            "error": f"The last chord ({_chord_label(last)}) doesn't fit "
+                     f"{key}, so I can't suggest a continuation."
+        })
+
+    ranked = sorted(
+        _transitions().get(numeral, {}).items(), key=lambda kv: -kv[1]
+    )
+    if not ranked:  # no corpus data — fall back to the pillars of the key
+        ranked = [("I", 0), ("IV", 0), ("V", 0), ("vi", 0)]
+
+    suggestions = []
+    for next_numeral, count in ranked[:6]:
+        symbol, tones = _chord_for_numeral(key, next_numeral)
+        if symbol:
+            suggestions.append({
+                "numeral": next_numeral,
+                "symbol": symbol,
+                "notes": tones,
+                "count": count,
+            })
+
+    return json.dumps({
+        "key": str(key),
+        "lastChord": {"symbol": _chord_label(last), "numeral": numeral},
+        "suggestions": suggestions,
+    })
+
+
+def chord_substitutions(notes_json):
+    notes = [n for n in json.loads(notes_json) if not n.get("muted")]
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    key = Key.detect(*_note_names(n["pitch"] for n in notes))
+
+    def describe(root_pc, quality_pcs, label):
+        root_name = TONICS[root_pc % 12]
+        chord = Chord([Tone.from_midi(60 + ((root_pc + i) % 12)) for i in quality_pcs])
+        symbol = _chord_label(chord)
+        return {"symbol": symbol or root_name, "reason": label}
+
+    MAJOR = [0, 4, 7]
+    MINOR = [0, 3, 7]
+    DOM7 = [0, 4, 7, 10]
+
+    found = {}
+    for cluster in _cluster_chords(notes):
+        pitches = sorted({n["pitch"] for n in cluster["notes"]})
+        if len({p % 12 for p in pitches}) < 2:
+            continue
+        chord = Chord([Tone.from_midi(p) for p in pitches])
+        identified = chord.identify()
+        symbol = _chord_label(chord)
+        if not identified or symbol in found:
+            continue
+
+        root_name, _, quality = identified.partition(" ")
+        root_pc = TONICS.index(_FLATS_REVERSED.get(root_name, root_name)) \
+            if root_name in TONICS or root_name in _FLATS_REVERSED else None
+        if root_pc is None:
+            continue
+
+        subs = []
+        if quality == "major":
+            subs.append(describe((root_pc + 9) % 12, MINOR, "relative minor"))
+            subs.append(describe(root_pc, MINOR, "parallel minor (borrowed)"))
+        elif quality == "minor":
+            subs.append(describe((root_pc + 3) % 12, MAJOR, "relative major"))
+            subs.append(describe(root_pc, MAJOR, "parallel major (borrowed)"))
+        if quality in ("dominant 7th", "major", "minor"):
+            subs.append(describe((root_pc + 6) % 12, DOM7, "tritone substitution"))
+        subs.append(describe((root_pc + 7) % 12, DOM7, "secondary dominant (V7 of this)"))
+
+        found[symbol] = {"symbol": symbol, "substitutions": subs}
+
+    if not found:
+        return json.dumps({"error": "No chords found in this clip."})
+    return json.dumps({
+        "key": str(key) if key else None,
+        "chords": list(found.values()),
+    })
+
+
+_FLATS_REVERSED = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
+
+
+def analyze_melody(notes_json):
+    notes = [n for n in json.loads(notes_json) if not n.get("muted")]
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    key = Key.detect(*_note_names(n["pitch"] for n in notes))
+    if not key:
+        return json.dumps({"error": "Couldn't detect a key for this clip."})
+    degrees = _scale_degrees(key.tonic_name, key.mode)
+
+    def degree_label(pc):
+        if pc in degrees:
+            return str(degrees.index(pc) + 1)
+        if (pc - 1) % 12 in degrees:
+            return "#" + str(degrees.index((pc - 1) % 12) + 1)
+        if (pc + 1) % 12 in degrees:
+            return "b" + str(degrees.index((pc + 1) % 12) + 1)
+        return "?"
+
+    notes.sort(key=lambda n: (n["startTime"], n["pitch"]))
+    rows = []
+    histogram = {}
+    in_scale = 0
+    for note in notes:
+        pc = note["pitch"] % 12
+        label = degree_label(pc)
+        if pc in degrees:
+            in_scale += 1
+        histogram[label] = histogram.get(label, 0) + 1
+        rows.append({
+            "name": str(Tone.from_midi(note["pitch"])),
+            "degree": label,
+            "start": note["startTime"],
+        })
+
+    pitches = [n["pitch"] for n in notes]
+    return json.dumps({
+        "key": str(key),
+        "noteCount": len(notes),
+        "inScalePercent": round(100 * in_scale / len(notes)),
+        "low": str(Tone.from_midi(min(pitches))),
+        "high": str(Tone.from_midi(max(pitches))),
+        "histogram": sorted(histogram.items(), key=lambda kv: -kv[1]),
+        "rows": rows[:120],
+        "truncated": max(0, len(rows) - 120),
+    })
+
+
+def negative_harmony(payload_json):
+    """Mirror notes around the key's tonic–dominant axis."""
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    tonic_pc = TONICS.index(params["tonic"])
+
+    changed = 0
+    mirrored = []
+    for note in notes:
+        new = dict(note)
+        if not note.get("muted"):
+            pitch = note["pitch"]
+            target_pc = (2 * tonic_pc + 7 - pitch) % 12
+            # Nearest octave placement to the original pitch (ties go down).
+            delta = (target_pc - pitch % 12 + 6) % 12 - 6
+            new_pitch = min(127, max(0, pitch + delta))
+            if new_pitch != pitch:
+                new["pitch"] = new_pitch
+                changed += 1
+        mirrored.append(new)
+
+    return json.dumps({"notes": mirrored, "changed": changed})
+
+
+def generate_melody(payload_json):
+    params = json.loads(payload_json)
+    tonic = params["tonic"]
+    scale_name = params["scale"]
+    octave = int(params.get("octave", 4))
+    bars = int(params.get("bars", 4))
+    density = params.get("density", "medium")
+
+    try:
+        scale = TonedScale(tonic=f"{tonic}{octave}")[scale_name]
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Couldn't build {tonic} {scale_name}: {e}"})
+
+    # Two octaves of scale tones to walk around in.
+    base = [t.midi for t in scale.tones][:-1]
+    pool = base + [p + 12 for p in base] + [base[0] + 24]
+
+    durations = {
+        "sparse": [(1.0, 5), (2.0, 3), (0.5, 2)],
+        "medium": [(0.5, 5), (1.0, 3), (0.25, 2)],
+        "busy": [(0.25, 5), (0.5, 4), (0.125, 1)],
+    }.get(density)
+    if not durations:
+        return json.dumps({"error": f"Unknown density: {density}"})
+
+    rng = random.Random()
+    total = bars * 4.0
+    # Start on the tonic, third, or fifth in the middle octave.
+    index = len(base) + rng.choice([0, 2, 4])
+    position = 0.0
+    notes = []
+    while position < total - 1e-9:
+        duration = rng.choices(
+            [d for d, _ in durations], [w for _, w in durations]
+        )[0]
+        duration = min(duration, total - position)
+        if rng.random() < 0.12 and notes:  # breathe occasionally
+            position += duration
+            continue
+        # Mostly stepwise motion, occasional leaps, pulled toward the middle.
+        step = rng.choices([-2, -1, 1, 2, 3, -3], [2, 8, 8, 2, 1, 1])[0]
+        if index + step < 0 or index + step >= len(pool):
+            step = -step
+        index = min(len(pool) - 1, max(0, index + step))
+        notes.append({
+            "pitch": pool[index],
+            "startTime": position,
+            "duration": duration,
+            "velocity": rng.randint(84, 110),
+        })
+        position += duration
+
+    # Resolve home: end on the tonic nearest the last note.
+    if notes:
+        last = notes[-1]
+        tonic_options = [p for p in pool if p % 12 == base[0] % 12]
+        last["pitch"] = min(tonic_options, key=lambda p: abs(p - last["pitch"]))
+
+    return json.dumps({
+        "notes": notes,
+        "length": total,
+        "name": f"{tonic} {scale_name} melody",
+    })
 
 
 def transpose_to_key(payload_json):

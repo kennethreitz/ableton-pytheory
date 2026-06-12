@@ -59,9 +59,16 @@ async function bootPython(): Promise<Pyodide> {
 
 const pythonPromise = bootPython();
 
+let scipyLoaded: Promise<unknown> | null = null;
+
 parentPort!.on("message", async ({ id, fn, payload }: Request) => {
   try {
     const py = await pythonPromise;
+    if (fn === "render_audio") {
+      // The synth engine's effects need scipy; load it on first render only.
+      scipyLoaded ??= py.loadPackage("scipy");
+      await scipyLoaded;
+    }
     const result = py.globals.get(fn)(payload) as string;
     parentPort!.postMessage({ id, result });
   } catch (error) {

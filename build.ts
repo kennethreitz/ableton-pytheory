@@ -48,24 +48,27 @@ for (const f of fs.readdirSync(pyodideSrc)) {
   }
 }
 
-// Ensure the numpy wheel ships with the runtime so loadPackage("numpy")
-// works offline. Fetch the exact build pinned in pyodide-lock.json once.
+// Ensure the wheels pytheory needs ship with the runtime so loadPackage()
+// works offline. Fetch the exact builds pinned in pyodide-lock.json once.
+// numpy: imported by pytheory itself. scipy: effects in the synth engine.
 const lock = JSON.parse(
   fs.readFileSync(path.join(pyodideDest, "pyodide-lock.json"), "utf8"),
 );
-const numpyWheel: string = lock.packages.numpy.file_name;
-const cachedWheel = path.join(pyodideSrc, numpyWheel);
-if (!fs.existsSync(cachedWheel)) {
-  const pyodideVersion = JSON.parse(
-    fs.readFileSync(path.join(pyodideSrc, "package.json"), "utf8"),
-  ).version;
-  const url = `https://cdn.jsdelivr.net/pyodide/v${pyodideVersion}/full/${numpyWheel}`;
-  console.log(`Downloading ${numpyWheel}…`);
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Failed to download ${url}: ${response.status}`);
-  fs.writeFileSync(cachedWheel, Buffer.from(await response.arrayBuffer()));
+const pyodideVersion = JSON.parse(
+  fs.readFileSync(path.join(pyodideSrc, "package.json"), "utf8"),
+).version;
+for (const pkg of ["numpy", "scipy"]) {
+  const wheel: string = lock.packages[pkg].file_name;
+  const cachedWheel = path.join(pyodideSrc, wheel);
+  if (!fs.existsSync(cachedWheel)) {
+    const url = `https://cdn.jsdelivr.net/pyodide/v${pyodideVersion}/full/${wheel}`;
+    console.log(`Downloading ${wheel}…`);
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Failed to download ${url}: ${response.status}`);
+    fs.writeFileSync(cachedWheel, Buffer.from(await response.arrayBuffer()));
+  }
+  fs.copyFileSync(cachedWheel, path.join(pyodideDest, wheel));
 }
-fs.copyFileSync(cachedWheel, path.join(pyodideDest, numpyWheel));
 
 // Ship the pytheory Python sources; the extension writes them into Pyodide's
 // virtual filesystem at startup.

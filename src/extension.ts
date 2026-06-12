@@ -20,17 +20,24 @@ import {
   renderErrorDialog,
   renderHarmonizeForm,
   renderKeyDialog,
+  renderMelodyAnalysisDialog,
+  renderMelodyForm,
   renderMessageDialog,
   renderProgressionForm,
   renderRenderAudioForm,
   renderScaleForm,
+  renderSubstitutionsDialog,
+  renderSuggestionsDialog,
   renderTabsDialog,
   renderTabsForm,
   renderTransposeForm,
   type ChordsResult,
   type KeyDefaults,
   type KeyResult,
+  type MelodyAnalysis,
   type Options,
+  type SubstitutionsResult,
+  type SuggestionsResult,
   type TabsResult,
 } from "./dialogs.js";
 
@@ -80,6 +87,10 @@ export function activate(activation: ActivationContext) {
     run: (context: Context, handle: Handle) => Promise<void>][] = [
     ["MidiClip", "Detect Key", "pytheory.detect-key", detectKey],
     ["MidiClip", "Detect Chords", "pytheory.detect-chords", detectChords],
+    ["MidiClip", "Analyze Melody", "pytheory.analyze-melody", analyzeMelody],
+    ["MidiClip", "Suggest Next Chord", "pytheory.suggest-next", suggestNextChord],
+    ["MidiClip", "Chord Substitutions", "pytheory.substitutions", chordSubstitutions],
+    ["MidiClip", "Negative Harmony", "pytheory.negative-harmony", negativeHarmony],
     ["MidiClip", "Guitar Tabs…", "pytheory.guitar-tabs", guitarTabs],
     ["MidiClip", "Harmonize…", "pytheory.harmonize", harmonize],
     ["MidiClip", "Arpeggiate…", "pytheory.arpeggiate", arpeggiate],
@@ -90,6 +101,7 @@ export function activate(activation: ActivationContext) {
     ["ClipSlot", "Generate Progression…", "pytheory.generate-progression", generateProgression],
     ["ClipSlot", "Generate Scale…", "pytheory.generate-scale", generateScale],
     ["ClipSlot", "Generate Drum Pattern…", "pytheory.generate-drums", generateDrums],
+    ["ClipSlot", "Generate Melody…", "pytheory.generate-melody", generateMelody],
   ];
 
   for (const [scope, label, id, run] of commands) {
@@ -197,6 +209,121 @@ async function conformToScale(context: Context, handle: Handle) {
     420,
     200,
   );
+}
+
+async function analyzeMelody(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = clip.notes;
+  const result = (await context.ui.withinProgressDialog(
+    "Analyzing melody…",
+    {},
+    () => analyze<MelodyAnalysis>("analyze_melody", notes),
+  )) as MelodyAnalysis & { error?: string };
+  const html = result.error
+    ? renderErrorDialog(result.error)
+    : renderMelodyAnalysisDialog(clipName, result);
+  await showDialog(context, html, 460, 480);
+}
+
+async function suggestNextChord(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  const result = (await context.ui.withinProgressDialog(
+    "Consulting the corpus…",
+    {},
+    () => analyze<SuggestionsResult>("suggest_next_chord", notes),
+  )) as SuggestionsResult & { error?: string };
+  const html = result.error
+    ? renderErrorDialog(result.error)
+    : renderSuggestionsDialog(result);
+  await showDialog(context, html, 480, 380);
+}
+
+async function chordSubstitutions(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = clip.notes;
+  const result = (await context.ui.withinProgressDialog(
+    "Finding substitutions…",
+    {},
+    () => analyze<SubstitutionsResult>("chord_substitutions", notes),
+  )) as SubstitutionsResult & { error?: string };
+  const html = result.error
+    ? renderErrorDialog(result.error)
+    : renderSubstitutionsDialog(clipName, result);
+  await showDialog(context, html, 480, 460);
+}
+
+async function negativeHarmony(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const [options, detected] = (await context.ui.withinProgressDialog(
+    "Mirroring…",
+    {},
+    () =>
+      Promise.all([
+        analyze<Options>("get_options", null),
+        analyze<KeyResult>("detect_key", notes),
+      ]),
+  )) as [Options, KeyResult];
+
+  const tonic = detected.tonic ?? songKey(context, options).tonic;
+  const result = await analyze<{ notes: NoteDescription[]; changed: number }>(
+    "negative_harmony",
+    { notes, tonic },
+  );
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+
+  context.withinTransaction(() => {
+    clip.notes = result.notes;
+  });
+  await showDialog(
+    context,
+    renderMessageDialog(
+      "Negative Harmony",
+      `Mirrored ${result.changed} ${result.changed === 1 ? "note" : "notes"} around the ${tonic} tonic–dominant axis. Run it again to undo musically.`,
+    ),
+    440,
+    200,
+  );
+}
+
+async function generateMelody(context: Context, handle: Handle) {
+  const slot = context.getObjectFromHandle(handle, ClipSlot);
+  if (slot.clip) {
+    await showDialog(
+      context,
+      renderErrorDialog("This clip slot already has a clip — pick an empty one."),
+      420,
+      200,
+    );
+    return;
+  }
+
+  const options = await analyze<Options>("get_options", null);
+  const params = await showForm(
+    context,
+    renderMelodyForm(options, songKey(context, options)),
+    460,
+    340,
+  );
+  if (!params) return;
+
+  const generated = await analyze<GeneratedClip>("generate_melody", params);
+  if (generated.error) {
+    await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+    return;
+  }
+  await fillClip(context, slot, generated);
 }
 
 async function transposeToKey(context: Context, handle: Handle) {
@@ -407,8 +534,10 @@ async function generateProgression(context: Context, handle: Handle) {
   );
   if (!params) return;
 
-  const numerals =
-    params.progression === "custom"
+  const isRandom = params.progression === "random";
+  const numerals = isRandom
+    ? []
+    : params.progression === "custom"
       ? String(params.customNumerals ?? "").trim().split(/[\s,-]+/)
       : options.progressions[String(params.progression)];
 
@@ -416,6 +545,8 @@ async function generateProgression(context: Context, handle: Handle) {
     tonic: params.tonic,
     mode: params.mode,
     numerals,
+    random: isRandom,
+    length: 4,
     octave: params.octave,
     beatsPerChord: params.beatsPerChord,
   });

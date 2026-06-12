@@ -13,8 +13,17 @@ Right-click a **MIDI clip**:
 - **Detect Chords** — clusters notes by onset, names each chord
   (`D minor 7th`), gives its lead-sheet symbol (`Dm7`) and Roman numeral
   function in the detected key (`ii`).
-- **Guitar Tabs…** — fingering charts for the clip's chords, on guitar,
-  ukulele, bass, mandolin, or banjo.
+- **Analyze Melody** — every note's scale degree in the detected key, plus
+  range, degree histogram, and how diatonic the line is.
+- **Suggest Next Chord** — ranks likely continuations of the clip's last
+  chord using transition statistics mined from pytheory's progression corpus.
+- **Chord Substitutions** — relative/parallel swaps, tritone substitutions,
+  and secondary dominants for each chord in the clip.
+- **Negative Harmony** — mirrors the clip around the key's tonic–dominant
+  axis (C major becomes C minor); run it twice to get back.
+- **Guitar Tabs…** — fingering charts for the clip's chords plus a full
+  fretboard map of the detected scale, on guitar, ukulele, bass, mandolin,
+  or banjo. Works on melodic clips too.
 - **Harmonize…** — adds diatonic thirds, sixths, full triads, or octaves
   above or below the melody, in the detected key.
 - **Arpeggiate…** — replaces block chords with arpeggios (up, down, or
@@ -31,8 +40,12 @@ Right-click a **MIDI clip**:
 Right-click an empty **clip slot**:
 
 - **Generate Progression…** — pick a key, mode, and progression (14 built-ins
-  from rock to jazz to flamenco, or type your own Roman numerals like
-  `I vi ii V7`) and get a MIDI clip of the chords.
+  from rock to jazz to flamenco, type your own Roman numerals like
+  `I vi ii V7`, or take a random walk through the progression corpus) and
+  get a MIDI clip of the chords.
+- **Generate Melody…** — random in-key melodies: mostly stepwise with
+  occasional leaps, breathing rests, resolving to the tonic. Pick the
+  density from sparse to busy.
 - **Generate Scale…** — write any of pytheory's scales as a runnable clip,
   up or up-and-down.
 - **Generate Drum Pattern…** — 100 preset patterns (house, bossa nova,
@@ -88,8 +101,9 @@ Logs (including `console.log` and uncaught exceptions) land in
 
 ## Packaging
 
-`npm run package` produces `pytheory-<version>.ablx` (~9 MB), installable by
-dropping it onto Live's Settings → Extensions page.
+`npm run package` produces `pytheory-<version>.ablx` (~25 MB — Pyodide plus
+numpy and scipy wheels), installable by dropping it onto Live's Settings →
+Extensions page.
 
 ## License
 

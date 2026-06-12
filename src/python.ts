@@ -66,7 +66,12 @@ export type AnalysisFunction =
   | "guitar_tabs"
   | "transpose_to_key"
   | "smooth_voicings"
-  | "render_audio";
+  | "render_audio"
+  | "analyze_melody"
+  | "suggest_next_chord"
+  | "chord_substitutions"
+  | "negative_harmony"
+  | "generate_melody";
 
 /** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(
