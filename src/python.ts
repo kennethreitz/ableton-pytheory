@@ -71,7 +71,10 @@ export type AnalysisFunction =
   | "suggest_next_chord"
   | "chord_substitutions"
   | "negative_harmony"
-  | "generate_melody";
+  | "generate_melody"
+  | "generate_from_symbols"
+  | "generate_bassline"
+  | "notation";
 
 /** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(

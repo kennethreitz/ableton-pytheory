@@ -829,6 +829,248 @@ def smooth_voicings(payload_json):
     return json.dumps({"notes": result, "revoiced": revoiced})
 
 
+def _root_pc(name):
+    """Pitch class for a note name like 'C#', 'Db', or 'A'."""
+    name = _FLATS_REVERSED.get(name, name)
+    return TONICS.index(name) if name in TONICS else None
+
+
+def _stacked_pitches(chord, octave):
+    """Chord tones voiced as an ascending stack from the root octave.
+
+    Chord.from_name returns tones in arbitrary octaves, so re-stack them:
+    root at the requested octave, every later tone above the previous one.
+    """
+    pcs = [t.midi % 12 for t in chord.tones]
+    pitch = pcs[0] + 12 * (octave + 1)
+    stacked = [pitch]
+    for pc in pcs[1:]:
+        pitch += (pc - pitch) % 12 or 12
+        stacked.append(pitch)
+    return stacked
+
+
+def generate_from_symbols(payload_json):
+    params = json.loads(payload_json)
+    symbols = params.get("symbols", "").replace(",", " ").split()
+    octave = int(params.get("octave", 4))
+    beats = float(params.get("beatsPerChord", 4))
+    if not symbols:
+        return json.dumps({"error": "No chord symbols given."})
+
+    chords = []
+    unknown = []
+    for symbol in symbols:
+        try:
+            chords.append(Chord.from_name(symbol))
+        except (ValueError, KeyError):
+            unknown.append(symbol)
+    if unknown:
+        return json.dumps({
+            "error": f"Unknown chord {'symbols' if len(unknown) > 1 else 'symbol'}: "
+                     f"{', '.join(unknown)}. Try names like Am7, Bb, Cmaj7, F#m, G7."
+        })
+
+    notes = []
+    for i, chord in enumerate(chords):
+        for pitch in _stacked_pitches(chord, octave):
+            if 0 <= pitch <= 127:
+                notes.append({
+                    "pitch": pitch,
+                    "startTime": i * beats,
+                    "duration": beats,
+                    "velocity": DEFAULT_VELOCITY,
+                })
+
+    return json.dumps({
+        "notes": notes,
+        "length": len(chords) * beats,
+        "name": " ".join(symbols),
+    })
+
+
+def generate_bassline(payload_json):
+    params = json.loads(payload_json)
+    source = [n for n in json.loads(json.dumps(params["notes"])) if not n.get("muted")]
+    style = params.get("style", "root-fifth")
+    octave = int(params.get("octave", 2))
+
+    clusters = []
+    for cluster in _cluster_chords(source):
+        pitches = sorted({n["pitch"] for n in cluster["notes"]})
+        if len({p % 12 for p in pitches}) < 2:
+            continue
+        chord = Chord([Tone.from_midi(p) for p in pitches])
+        identified = chord.identify()
+        root = None
+        if identified:
+            root = _root_pc(identified.partition(" ")[0])
+        if root is None:
+            root = pitches[0] % 12
+        pcs = {p % 12 for p in pitches}
+        third = next((pc for pc in pcs if (pc - root) % 12 in (3, 4)), root)
+        fifth = next((pc for pc in pcs if (pc - root) % 12 == 7), (root + 7) % 12)
+        end = max(n["startTime"] + n["duration"] for n in cluster["notes"])
+        clusters.append({
+            "start": cluster["start"], "end": end,
+            "root": root, "third": third, "fifth": fifth,
+        })
+    if not clusters:
+        return json.dumps({
+            "error": "No chords found to build a bassline from."
+        })
+
+    def place(pc):
+        return min(127, max(0, pc + 12 * (octave + 1)))
+
+    notes = []
+
+    def emit(pitch, start, duration, accent=False):
+        notes.append({
+            "pitch": pitch,
+            "startTime": round(start, 6),
+            "duration": round(duration, 6),
+            "velocity": 110 if accent else 96,
+        })
+
+    for i, c in enumerate(clusters):
+        span = c["end"] - c["start"]
+        if style == "roots":
+            emit(place(c["root"]), c["start"], span, accent=True)
+        elif style == "root-fifth":
+            beat = c["start"]
+            toggle = True
+            while beat < c["end"] - 1e-9:
+                duration = min(1.0, c["end"] - beat)
+                emit(place(c["root"] if toggle else c["fifth"]), beat, duration,
+                     accent=toggle)
+                toggle = not toggle
+                beat += duration
+        elif style == "arpeggio":
+            pattern = [c["root"], c["third"], c["fifth"], c["third"]]
+            beat = c["start"]
+            j = 0
+            while beat < c["end"] - 1e-9:
+                duration = min(0.5, c["end"] - beat)
+                emit(place(pattern[j % 4]), beat, duration, accent=j % 4 == 0)
+                j += 1
+                beat += duration
+        elif style == "walking":
+            tones = [c["root"], c["third"], c["fifth"], c["third"]]
+            steps = max(1, int(round(span)))
+            for j in range(steps):
+                beat = c["start"] + j
+                duration = min(1.0, c["end"] - beat)
+                if j == steps - 1 and i + 1 < len(clusters):
+                    # Chromatic approach into the next root, from below or
+                    # above, whichever is closer.
+                    next_root = place(clusters[i + 1]["root"])
+                    current = place(tones[(j - 1) % 4]) if j else place(c["root"])
+                    pitch = next_root - 1 if current <= next_root else next_root + 1
+                    emit(min(127, max(0, pitch)), beat, duration)
+                else:
+                    emit(place(tones[j % 4]), beat, duration, accent=j == 0)
+        else:
+            return json.dumps({"error": f"Unknown bassline style: {style}"})
+
+    return json.dumps({
+        "notes": notes,
+        "length": clusters[-1]["end"],
+        "name": f"bass ({style})",
+    })
+
+
+def _sequential_clusters(notes):
+    """Clusters if the clip is a simple chord/melody sequence, else None."""
+    clusters = _cluster_chords(notes)
+    position = -1.0
+    for cluster in clusters:
+        starts = {round(n["startTime"], 3) for n in cluster["notes"]}
+        ends = {round(n["startTime"] + n["duration"], 3) for n in cluster["notes"]}
+        if len(starts) > 1 or len(ends) > 1:
+            return None
+        if cluster["start"] < position - 1e-6:
+            return None
+        position = max(ends)
+    return clusters
+
+
+def notation(payload_json):
+    params = json.loads(payload_json)
+    notes = [n for n in params["notes"] if not n.get("muted")]
+    title = params.get("title") or "Untitled"
+    bpm = float(params.get("bpm", 120))
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    key = Key.detect(*_note_names(n["pitch"] for n in notes))
+    tonic = key.tonic_name if key else "C"
+    mode = key.mode if key and key.mode in ("major", "minor") else "major"
+
+    score = Score(bpm=bpm)
+
+    def fill_part(part, events):
+        """events: (start, duration, pitches) tuples, sequential."""
+        position = 0.0
+        for start, duration, pitches in events:
+            gap = start - position
+            if gap > 1e-6:
+                part.rest(_RawDuration(gap))
+            tones = [Tone.from_midi(p) for p in sorted(pitches)]
+            part.add(
+                tones[0] if len(tones) == 1 else Chord(tones),
+                _RawDuration(duration),
+            )
+            position = start + duration
+
+    sequential = _sequential_clusters(notes)
+    if sequential:
+        part = score.part(title or "part")
+        fill_part(part, [
+            (
+                c["start"],
+                max(n["duration"] for n in c["notes"]),
+                [n["pitch"] for n in c["notes"]],
+            )
+            for c in sequential
+        ])
+    else:
+        # Polyphonic with overlaps — split into voices, one staff each.
+        notes.sort(key=lambda n: (n["startTime"], n["pitch"]))
+        voices = []
+        for note in notes:
+            voice = next(
+                (v for v in voices if v["end"] <= note["startTime"] + 1e-6),
+                None,
+            )
+            if voice is None:
+                if len(voices) >= 8:
+                    continue
+                voice = {"end": 0.0, "events": []}
+                voices.append(voice)
+            voice["events"].append(note)
+            voice["end"] = note["startTime"] + note["duration"]
+        for i, voice in enumerate(voices):
+            part = score.part(f"voice {i + 1}")
+            fill_part(part, [
+                (n["startTime"], n["duration"], [n["pitch"]])
+                for n in voice["events"]
+            ])
+
+    abc_key = tonic + ("m" if mode == "minor" else "")
+    try:
+        abc = score.to_abc(title=title, key=abc_key)
+        lilypond = score.to_lilypond(title=title, key=tonic, mode=mode)
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Couldn't engrave this clip: {e}"})
+
+    return json.dumps({
+        "abc": abc,
+        "lilypond": lilypond,
+        "key": str(key) if key else None,
+    })
+
+
 def render_audio(payload_json):
     params = json.loads(payload_json)
     notes = [n for n in params["notes"] if not n.get("muted")]

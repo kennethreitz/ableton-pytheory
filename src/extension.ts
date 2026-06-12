@@ -1,5 +1,7 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   initialize,
@@ -14,6 +16,7 @@ import {
 import { analyze, getPython } from "./python.js";
 import {
   renderArpeggiateForm,
+  renderBasslineForm,
   renderChordsDialog,
   renderConformForm,
   renderDrumsForm,
@@ -23,6 +26,7 @@ import {
   renderMelodyAnalysisDialog,
   renderMelodyForm,
   renderMessageDialog,
+  renderNotationPage,
   renderProgressionForm,
   renderRenderAudioForm,
   renderScaleForm,
@@ -35,6 +39,7 @@ import {
   type KeyDefaults,
   type KeyResult,
   type MelodyAnalysis,
+  type NotationResult,
   type Options,
   type SubstitutionsResult,
   type SuggestionsResult,
@@ -66,6 +71,19 @@ function songKey(context: Context, options: Options): KeyDefaults {
   }
 }
 
+/**
+ * A directory we're allowed to write to. The host provides temp/storage
+ * directories; under `extensions-cli run` without flags they're undefined,
+ * so fall back to the OS temp dir during development.
+ */
+function writableDir(context: Context): string {
+  return (
+    context.environment.tempDirectory ??
+    context.environment.storageDirectory ??
+    os.tmpdir()
+  );
+}
+
 interface GeneratedClip {
   notes: NoteDescription[];
   length: number;
@@ -91,6 +109,8 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Suggest Next Chord", "pytheory.suggest-next", suggestNextChord],
     ["MidiClip", "Chord Substitutions", "pytheory.substitutions", chordSubstitutions],
     ["MidiClip", "Negative Harmony", "pytheory.negative-harmony", negativeHarmony],
+    ["MidiClip", "Show Notation", "pytheory.notation", showNotation],
+    ["MidiClip", "Generate Bassline…", "pytheory.bassline", generateBassline],
     ["MidiClip", "Guitar Tabs…", "pytheory.guitar-tabs", guitarTabs],
     ["MidiClip", "Harmonize…", "pytheory.harmonize", harmonize],
     ["MidiClip", "Arpeggiate…", "pytheory.arpeggiate", arpeggiate],
@@ -326,6 +346,103 @@ async function generateMelody(context: Context, handle: Handle) {
   await fillClip(context, slot, generated);
 }
 
+async function showNotation(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const result = (await context.ui.withinProgressDialog(
+    "Engraving…",
+    {},
+    () =>
+      analyze<NotationResult>("notation", {
+        notes,
+        title: clipName,
+        bpm: context.application.song.tempo,
+      }),
+  )) as NotationResult & { error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+
+  const dir = writableDir(context);
+  const safeName = clipName.replace(/[^\w-]+/g, "_") || "clip";
+  const lilypondPath = path.join(dir, `${safeName}.ly`);
+  fs.writeFileSync(lilypondPath, result.lilypond);
+
+  // The notation page inlines abcjs (~500 KB) — far too big for a data:
+  // URL, so serve it from a temp file instead.
+  const abcjsSource = fs.readFileSync(path.join(__dirname, "abcjs.js"), "utf8");
+  const html = renderNotationPage(clipName, result, lilypondPath, abcjsSource);
+  const htmlPath = path.join(dir, `pytheory-notation-${Date.now()}.html`);
+  fs.writeFileSync(htmlPath, html);
+  try {
+    await context.ui.showModalDialog(pathToFileURL(htmlPath).href, 760, 600);
+  } finally {
+    fs.rmSync(htmlPath, { force: true });
+  }
+}
+
+async function generateBassline(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const params = await showForm(context, renderBasslineForm(), 420, 260);
+  if (!params) return;
+
+  const generated = await analyze<GeneratedClip>("generate_bassline", {
+    notes,
+    style: params.style,
+    octave: params.octave,
+  });
+  if (generated.error) {
+    await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+    return;
+  }
+
+  // Put the bassline on a fresh MIDI track, at the same scene as the
+  // source clip when we can find it.
+  const song = context.application.song;
+  let sceneIndex = 0;
+  for (const track of song.tracks) {
+    const index = track.clipSlots.findIndex((slot) => {
+      try {
+        return slot.clip === clip;
+      } catch {
+        return false;
+      }
+    });
+    if (index >= 0) {
+      sceneIndex = index;
+      break;
+    }
+  }
+
+  const track = await song.createMidiTrack();
+  context.withinTransaction(() => {
+    track.name = `${clipName} bass`;
+  });
+  const slot = track.clipSlots[sceneIndex] ?? track.clipSlots[0];
+  if (!slot) {
+    await showDialog(context, renderErrorDialog("No clip slot available on the new track."), 420, 200);
+    return;
+  }
+  await fillClip(context, slot, {
+    ...generated,
+    name: `${clipName} ${generated.name}`,
+  });
+}
+
 async function transposeToKey(context: Context, handle: Handle) {
   const clip = context.getObjectFromHandle(handle, MidiClip);
   const notes = clip.notes;
@@ -463,12 +580,8 @@ async function renderAudio(context: Context, handle: Handle) {
       if (rendered.error) throw new Error(rendered.error);
 
       await update("Importing into project…", 80);
-      const tempDir =
-        context.environment.tempDirectory ??
-        context.environment.storageDirectory;
-      if (!tempDir) throw new Error("No writable directory available.");
       const wavPath = path.join(
-        tempDir,
+        writableDir(context),
         `pytheory-${instrument}-${Date.now()}.wav`,
       );
       writeWav(
@@ -533,6 +646,20 @@ async function generateProgression(context: Context, handle: Handle) {
     360,
   );
   if (!params) return;
+
+  if (params.progression === "symbols") {
+    const generated = await analyze<GeneratedClip>("generate_from_symbols", {
+      symbols: params.customSymbols,
+      octave: params.octave,
+      beatsPerChord: params.beatsPerChord,
+    });
+    if (generated.error) {
+      await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+      return;
+    }
+    await fillClip(context, slot, generated);
+    return;
+  }
 
   const isRandom = params.progression === "random";
   const numerals = isRandom

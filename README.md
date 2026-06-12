@@ -34,15 +34,20 @@ Right-click a **MIDI clip**:
   moves E to E♭, not everything chromatically.
 - **Smooth Voicings** — re-voices each chord (inversions and octaves) to
   minimize voice-leading movement from the previous one.
+- **Show Notation** — engraved sheet music for the clip, rendered in the
+  dialog (via pytheory's ABC export + abcjs), plus the LilyPond source,
+  saved as a `.ly` file and ready to copy.
+- **Generate Bassline…** — follows the clip's chords onto a new MIDI track:
+  roots, root–fifth, arpeggiated, or walking (with chromatic approach notes).
 - **Render to Audio…** — renders the clip with pytheory's synth engine
   (46 instruments) onto a new audio track. No plugins involved.
 
 Right-click an empty **clip slot**:
 
 - **Generate Progression…** — pick a key, mode, and progression (14 built-ins
-  from rock to jazz to flamenco, type your own Roman numerals like
-  `I vi ii V7`, or take a random walk through the progression corpus) and
-  get a MIDI clip of the chords.
+  from rock to jazz to flamenco, your own Roman numerals like `I vi ii V7`,
+  chord symbols like `Am7 D7 Gmaj7`, or a random walk through the
+  progression corpus) and get a MIDI clip of the chords.
 - **Generate Melody…** — random in-key melodies: mostly stepwise with
   occasional leaps, breathing rests, resolving to the tonic. Pick the
   density from sparse to busy.

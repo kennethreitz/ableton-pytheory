@@ -9,11 +9,12 @@
   "scripts": {
     "build": "tsc --noEmit && tsx build.ts --production",
     "build:dev": "tsc --noEmit && tsx build.ts",
-    "start": "npm run build:dev && extensions-cli run",
+    "start": "npm run build:dev && extensions-cli run --storage-directory .dev/storage --temp-directory .dev/tmp",
     "package": "npm run build && extensions-cli package -i dist/pyodide -i dist/pytheory -i dist/python-worker.mjs"
   },
   "dependencies": {
     "@ableton-extensions/sdk": "file:vendor/ableton-extensions-sdk-1.0.0-beta.0.tgz",
+    "abcjs": "^6.6.3",
     "pyodide": "^314.0.0"
   },
   "devDependencies": {

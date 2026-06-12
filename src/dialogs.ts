@@ -228,7 +228,8 @@ export function renderProgressionForm(
       value: name,
       label: `${name}  (${numerals.join(" ")})`,
     })),
-    { value: "custom", label: "Custom…" },
+    { value: "custom", label: "Custom Roman numerals…" },
+    { value: "symbols", label: "Chord symbols…" },
     { value: "random", label: "Surprise me (random walk)" },
   ];
   const fields = [
@@ -237,11 +238,18 @@ export function renderProgressionForm(
     field(
       "Progression",
       select("progression", progressionChoices, "I-V-vi-IV",
-        `onchange="document.getElementById('custom-row').style.display = this.value === 'custom' ? '' : 'none'"`),
+        `onchange="
+          document.getElementById('custom-row').style.display = this.value === 'custom' ? '' : 'none';
+          document.getElementById('symbols-row').style.display = this.value === 'symbols' ? '' : 'none';
+        "`),
     ),
     `<div id="custom-row" style="display: none">${field(
       "Custom numerals",
       `<input type="text" name="customNumerals" placeholder="e.g. I vi ii V7">`,
+    )}</div>`,
+    `<div id="symbols-row" style="display: none">${field(
+      "Chord symbols",
+      `<input type="text" name="customSymbols" placeholder="e.g. Am7 D7 Gmaj7">`,
     )}</div>`,
     field("Octave", select("octave", OCTAVES, "4")),
     field(
@@ -644,6 +652,92 @@ export function renderRenderAudioForm(options: Options): string {
     fields,
     "Render",
   );
+}
+
+export function renderBasslineForm(): string {
+  const fields = [
+    field(
+      "Style",
+      select("style", [
+        { value: "root-fifth", label: "Root & fifth" },
+        { value: "roots", label: "Roots only" },
+        { value: "walking", label: "Walking (jazz)" },
+        { value: "arpeggio", label: "Arpeggiated (eighths)" },
+      ], "root-fifth"),
+    ),
+    field(
+      "Octave",
+      select("octave", [
+        { value: "1", label: "1 (low)" },
+        { value: "2", label: "2" },
+        { value: "3", label: "3" },
+      ], "2"),
+    ),
+  ].join("");
+  return formPage(
+    "Generate Bassline",
+    "Follows this clip's chords onto a new MIDI track.",
+    fields,
+    "Generate",
+  );
+}
+
+export interface NotationResult {
+  abc: string;
+  lilypond: string;
+  key: string | null;
+}
+
+/**
+ * Full notation page: abcjs is inlined and renders the ABC to SVG on a
+ * white "paper" card; the LilyPond source sits below for copying.
+ * Served from a temp file via file:// (too big for a data: URL).
+ */
+export function renderNotationPage(
+  clipName: string,
+  result: NotationResult,
+  lilypondPath: string,
+  abcjsSource: string,
+): string {
+  const keyNote = result.key ? ` — key of ${result.key}` : "";
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Notation</title>
+<script>${SCRIPT}</script>
+<style>${STYLE}
+  #paper { background: #fff; border-radius: 4px; padding: 8px; }
+  textarea {
+    width: 100%; height: 140px; box-sizing: border-box;
+    background: var(--input-bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 3px;
+    font-family: monospace; font-size: 11px; padding: 6px;
+  }
+  h2 { font-size: 13px; margin: 14px 0 6px; }
+</style>
+</head>
+<body>
+<h1>Notation</h1>
+<p class="subtitle">${escapeHtml(clipName)}${escapeHtml(keyNote)}</p>
+<div class="result">
+  <div id="paper"></div>
+  <h2>LilyPond source <span class="dim">(saved to ${escapeHtml(lilypondPath)})</span></h2>
+  <textarea readonly id="ly">${escapeHtml(result.lilypond)}</textarea>
+</div>
+<div class="buttons">
+  <button class="secondary" onclick="document.getElementById('ly').select(); document.execCommand('copy')">Copy LilyPond</button>
+  <button class="primary" onclick="cancel()">Close</button>
+</div>
+<script>${abcjsSource}</script>
+<script>
+  ABCJS.renderAbc("paper", ${JSON.stringify(result.abc)}, {
+    responsive: "resize",
+    staffwidth: 640,
+  });
+</script>
+</body>
+</html>`;
 }
 
 export function renderMessageDialog(title: string, message: string): string {

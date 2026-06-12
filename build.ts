@@ -90,4 +90,15 @@ for (const f of fs.readdirSync(pytheorySrc)) {
   }
 }
 
-console.log("Copied Pyodide runtime and pytheory sources into dist/.");
+// The notation dialog inlines abcjs into a webview page at runtime.
+fs.copyFileSync(
+  "node_modules/abcjs/dist/abcjs-basic-min.js",
+  path.join("dist", "abcjs.js"),
+);
+
+// Local stand-ins for the host-provided storage/temp directories, passed
+// to extensions-cli run by npm start (the dev host provides none by default).
+fs.mkdirSync(".dev/storage", { recursive: true });
+fs.mkdirSync(".dev/tmp", { recursive: true });
+
+console.log("Copied Pyodide runtime, pytheory sources, and abcjs into dist/.");
