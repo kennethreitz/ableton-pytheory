@@ -1,13 +1,18 @@
-// Runs in a worker thread, outside the Extension Host's vm sandbox — the
+// The Python runtime. Runs outside the Extension Host's vm sandbox — the
 // Pyodide runtime needs dynamic import(), which vm contexts don't provide.
+//
+// Two transports, decided by how we were launched:
+//  - worker thread (dev host): messages over parentPort
+//  - child process (Live's managed host denies worker_threads under Node's
+//    permission model): newline-delimited JSON over stdin/stdout
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parentPort } from "node:worker_threads";
 
-const distDir = path.dirname(fileURLToPath(import.meta.url));
-
 import analysisSource from "./analysis.py";
+
+const distDir = path.dirname(fileURLToPath(import.meta.url));
 
 interface Pyodide {
   loadPackage(name: string): Promise<unknown>;
@@ -25,15 +30,63 @@ interface Request {
   payload: string;
 }
 
+let send: (message: unknown) => void;
+if (parentPort) {
+  const port = parentPort;
+  send = (message) => port.postMessage(message);
+  port.on("message", handleRequest);
+} else {
+  // Child-process mode: stdout carries the protocol, so reroute all
+  // logging (including Python's) to stderr.
+  const writeOut = process.stdout.write.bind(process.stdout);
+  const log = (...args: unknown[]) =>
+    process.stderr.write(args.map(String).join(" ") + "\n");
+  console.log = console.info = console.warn = log;
+  send = (message) => writeOut(JSON.stringify(message) + "\n");
+
+  let buffer = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk: string) => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (line.trim()) handleRequest(JSON.parse(line) as Request);
+    }
+  });
+  process.stdin.on("end", () => process.exit(0));
+}
+
 async function bootPython(): Promise<Pyodide> {
+  // Under Node's permission model (Live's managed host), the legacy
+  // process.binding API is denied — but Emscripten's NODEFS only wants
+  // the constants, which are all public API. Substitute them.
+  try {
+    (process as unknown as { binding(name: string): unknown }).binding(
+      "constants",
+    );
+  } catch {
+    const os = await import("node:os");
+    const crypto = await import("node:crypto");
+    (process as unknown as { binding(name: string): unknown }).binding = (
+      name: string,
+    ) => {
+      if (name === "constants") {
+        return { fs: fs.constants, os: os.constants, crypto: crypto.constants };
+      }
+      throw new Error(`process.binding('${name}') is unavailable`);
+    };
+  }
+
   const runtimeDir = path.join(distDir, "pyodide");
   const { loadPyodide } = await import(
     pathToFileURL(path.join(runtimeDir, "pyodide.mjs")).href
   );
   const py: Pyodide = await loadPyodide({
     indexURL: runtimeDir,
-    // process.stdout has no fd in worker threads; route through console,
-    // which the host forwards to the ExtensionHost log.
+    // process.stdout has no fd in worker threads (and is the protocol
+    // channel in child mode); route through console, which we control.
     stdout: (line: string) => console.log(line),
     stderr: (line: string) => console.error(line),
   });
@@ -52,19 +105,18 @@ async function bootPython(): Promise<Pyodide> {
   }
   py.runPython('import sys; sys.path.insert(0, "/lib")');
 
-  // Define the analysis functions (detect_key, detect_chords).
+  // Define the analysis functions (detect_key, detect_chords, ...).
   py.runPython(analysisSource);
   return py;
 }
 
 const pythonPromise = bootPython();
-
 let scipyLoaded: Promise<unknown> | null = null;
 
 // Functions that analyze a host-side audio file.
 const AUDIO_FNS = new Set(["audio_to_midi", "audio_detect", "sample_pitch"]);
 
-parentPort!.on("message", async ({ id, fn, payload }: Request) => {
+async function handleRequest({ id, fn, payload }: Request) {
   try {
     const py = await pythonPromise;
     if (fn === "render_audio" || AUDIO_FNS.has(fn)) {
@@ -81,13 +133,13 @@ parentPort!.on("message", async ({ id, fn, payload }: Request) => {
       payload = JSON.stringify({ ...request, path: "/audio/input.wav" });
     }
     const result = py.globals.get(fn)(payload) as string;
-    parentPort!.postMessage({ id, result });
+    send({ id, result });
   } catch (error) {
-    parentPort!.postMessage({ id, error: String(error) });
+    send({ id, error: String(error) });
   }
-});
+}
 
 // Tell the main thread we exist; it resolves readiness on first reply anyway.
 pythonPromise
-  .then(() => parentPort!.postMessage({ ready: true }))
-  .catch((error) => parentPort!.postMessage({ bootError: String(error) }));
+  .then(() => send({ ready: true }))
+  .catch((error) => send({ bootError: String(error) }));

@@ -1,6 +1,6 @@
 {
   "name": "pytheory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "dist/extension.js",
   "engines": {
     "node": ">=24.14.1"
