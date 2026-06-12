@@ -1,12 +1,27 @@
-# ableton-pytheory
+<h1 align="center">pytheory for Ableton Live</h1>
 
-An [Ableton Live Extension](https://ableton.github.io/extensions-sdk) that brings
-[pytheory](https://github.com/kennethreitz/pytheory) — Music Theory for Humans —
-into Live.
+<p align="center">
+  <strong><a href="https://github.com/kennethreitz/pytheory">pytheory</a> — Music Theory for Humans — inside Live.</strong><br>
+  Detect keys and chords, generate progressions and melodies, harmonize, arpeggiate,<br>
+  re-voice, print sheet music, and more — all one right-click away.
+</p>
 
-## Features
+<p align="center">
+  <img src="docs/screenshots/context-menu.png" width="760"
+       alt="Live's context menu showing the pytheory extension commands on a MIDI clip">
+</p>
 
-Right-click a **MIDI clip**:
+<p align="center">
+  An <a href="https://ableton.github.io/extensions-sdk">Ableton Live Extension</a> that runs the
+  real pytheory Python package inside Live via WebAssembly.<br>
+  No plugins, no system Python, no network — fully offline.
+</p>
+
+---
+
+## Analyze
+
+Right-click any **MIDI clip**:
 
 - **Detect Key** — `Key.detect()` over the clip's notes, plus the top scale
   candidates ranked by fitness.
@@ -17,18 +32,28 @@ Right-click a **MIDI clip**:
 - **Analyze Melody** — every note's scale degree in the detected key, plus
   range, degree histogram, how diatonic the line is, and the role of each
   chromatic note (passing, neighbor, or free).
-- **Invert Melody / Retrograde** — classic motivic transforms: mirror the
-  line around its first note (diatonically when in key) or reverse it in
-  time. Both are their own inverse — run twice to get back.
 - **Suggest Next Chord** — ranks likely continuations of the clip's last
   chord using transition statistics mined from pytheory's progression corpus.
 - **Chord Substitutions** — relative/parallel swaps, tritone substitutions,
   and secondary dominants for each chord in the clip.
-- **Negative Harmony** — mirrors the clip around the key's tonic–dominant
-  axis (C major becomes C minor); run it twice to get back.
 - **Guitar Tabs…** — fingering charts for the clip's chords plus a full
   fretboard map of the detected scale, on guitar, ukulele, bass, mandolin,
   or banjo. Works on melodic clips too.
+- **Show Notation** — engraved sheet music for the clip, rendered in the
+  dialog (via pytheory's ABC export + abcjs), plus the LilyPond source,
+  saved as a `.ly` file and ready to copy.
+
+<p align="center">
+  <img src="docs/screenshots/key-detection.png" width="49%" alt="Key Detection dialog: F# minor, with ranked scale candidates">
+  <img src="docs/screenshots/chord-detection.png" width="49%" alt="Chord Detection dialog: per-bar chords with note spellings">
+</p>
+<p align="center">
+  <img src="docs/screenshots/suggest-next-chord.png" width="49%" alt="Suggest Next Chord dialog ranking continuations by corpus frequency">
+  <img src="docs/screenshots/notation.png" width="49%" alt="Notation dialog with engraved sheet music and LilyPond source">
+</p>
+
+## Transform
+
 - **Harmonize…** — adds diatonic thirds, sixths, full triads, or octaves
   above or below the melody, in the detected key.
 - **Arpeggiate…** — replaces block chords with arpeggios (up, down, or
@@ -39,15 +64,29 @@ Right-click a **MIDI clip**:
   moves E to E♭, not everything chromatically.
 - **Smooth Voicings** — re-voices each chord (inversions and octaves) to
   minimize voice-leading movement from the previous one.
-- **Show Notation** — engraved sheet music for the clip, rendered in the
-  dialog (via pytheory's ABC export + abcjs), plus the LilyPond source,
-  saved as a `.ly` file and ready to copy.
+- **Invert Melody / Retrograde** — classic motivic transforms: mirror the
+  line around its first note (diatonically when in key) or reverse it in
+  time. Both are their own inverse — run twice to get back.
+- **Negative Harmony** — mirrors the clip around the key's tonic–dominant
+  axis (C major becomes C minor); run it twice to get back.
 - **Generate Bassline…** — follows the clip's chords onto a new MIDI track:
   roots, root–fifth, arpeggiated, or walking (with chromatic approach notes).
 - **Render to Audio…** — renders the clip with pytheory's synth engine
   (46 instruments) onto a new audio track. No plugins involved.
 
+<p align="center">
+  <img src="docs/screenshots/conform-to-scale.png" width="60%"
+       alt="Conform to Scale dialog with the detected key prefilled">
+</p>
+
+## Generate
+
 Right-click an empty **clip slot**:
+
+<p align="center">
+  <img src="docs/screenshots/generators-menu.png" width="760"
+       alt="Clip slot context menu with the pytheory generator commands">
+</p>
 
 - **Generate Progression…** — pick a key, mode, and progression (14 built-ins
   from rock to jazz to flamenco, your own Roman numerals like `I vi ii V7`,
@@ -62,12 +101,19 @@ Right-click an empty **clip slot**:
   teental, drum and bass, second line…) with 37 optional fills, written to
   the General MIDI drum map.
 
+<p align="center">
+  <img src="docs/screenshots/generate-progression.png" width="60%"
+       alt="Generate Progression dialog: key, mode, progression, octave, and beats per chord">
+</p>
+
 Right-click a **scene**:
 
 - **Generate Song Sketch…** — one click, four new tracks at that scene:
   chords, bassline, melody, and drums, all in your chosen (or the Set's) key.
 - **Detect Scene Key** — analyzes every MIDI clip in the scene together,
   with a per-clip breakdown.
+
+## Audio & samples
 
 Right-click an **audio clip**:
 
