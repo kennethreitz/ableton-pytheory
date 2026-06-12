@@ -822,6 +822,96 @@ export function renderNotationPage(
 </html>`;
 }
 
+export interface AudioDetectResult {
+  key: string | null;
+  tempo: number | null;
+  chords: { start: number; duration: number; symbol: string }[];
+}
+
+export function renderAudioDetectDialog(
+  clipName: string,
+  result: AudioDetectResult,
+): string {
+  const rows = result.chords
+    .map(
+      (c) => `<tr>
+        <td class="dim">${(1 + c.start / 4).toFixed(2)}</td>
+        <td>${escapeHtml(c.symbol)}</td>
+        <td class="dim">${c.duration} beats</td>
+      </tr>`,
+    )
+    .join("");
+  const tempo = result.tempo ? `, ~${result.tempo} BPM` : "";
+  return infoPage(
+    "Audio Analysis",
+    `${clipName}${tempo}`,
+    `<p class="big">${result.key ? escapeHtml(result.key) : "No key detected"}</p>
+     <table>
+       <tr><th>Bar</th><th>Chord</th><th>Length</th></tr>
+       ${rows}
+     </table>`,
+  );
+}
+
+export interface SamplePitchResult {
+  note: string;
+  frequency: number;
+  cents: number;
+  midi: number;
+  setTonic?: string;
+  transpose?: number;
+}
+
+export function renderSamplePitchDialog(
+  sampleName: string,
+  result: SamplePitchResult,
+): string {
+  const centsNote =
+    result.cents === 0 ? "in tune" : `${result.cents > 0 ? "+" : ""}${result.cents} cents`;
+  let tuning = "";
+  if (result.setTonic !== undefined && result.transpose !== undefined) {
+    tuning =
+      result.transpose === 0
+        ? `<p>Already on the Set's tonic (${escapeHtml(result.setTonic)}).</p>`
+        : `<p>To reach the Set's tonic (${escapeHtml(result.setTonic)}):
+             transpose <b>${result.transpose > 0 ? "+" : ""}${result.transpose} st</b>.</p>`;
+  }
+  return infoPage(
+    "Sample Pitch",
+    sampleName,
+    `<p class="big">${escapeHtml(result.note)} <span class="dim">(${result.frequency} Hz, ${escapeHtml(centsNote)})</span></p>
+     ${tuning}`,
+  );
+}
+
+export interface SceneKeyResult {
+  key: string | null;
+  clips: { name: string; key: string | null }[];
+}
+
+export function renderSceneKeyDialog(
+  sceneName: string,
+  result: SceneKeyResult,
+): string {
+  const rows = result.clips
+    .map(
+      (c) => `<tr>
+        <td>${escapeHtml(c.name)}</td>
+        <td class="dim">${c.key ? escapeHtml(c.key) : "—"}</td>
+      </tr>`,
+    )
+    .join("");
+  return infoPage(
+    "Scene Key",
+    sceneName,
+    `<p class="big">${result.key ? escapeHtml(result.key) : "No key detected"}</p>
+     <table>
+       <tr><th>Clip</th><th>Key</th></tr>
+       ${rows}
+     </table>`,
+  );
+}
+
 export function renderMessageDialog(title: string, message: string): string {
   return infoPage(title, "", `<p>${escapeHtml(message)}</p>`);
 }

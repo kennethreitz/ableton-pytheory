@@ -78,7 +78,10 @@ export type AnalysisFunction =
   | "invert_notes"
   | "retrograde_notes"
   | "generate_sketch"
-  | "audio_to_midi";
+  | "audio_to_midi"
+  | "audio_detect"
+  | "sample_pitch"
+  | "scene_key";
 
 /** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(

@@ -61,15 +61,18 @@ const pythonPromise = bootPython();
 
 let scipyLoaded: Promise<unknown> | null = null;
 
+// Functions that analyze a host-side audio file.
+const AUDIO_FNS = new Set(["audio_to_midi", "audio_detect", "sample_pitch"]);
+
 parentPort!.on("message", async ({ id, fn, payload }: Request) => {
   try {
     const py = await pythonPromise;
-    if (fn === "render_audio" || fn === "audio_to_midi") {
+    if (fn === "render_audio" || AUDIO_FNS.has(fn)) {
       // The synth engine and audio analysis need scipy; load lazily.
       scipyLoaded ??= py.loadPackage("scipy");
       await scipyLoaded;
     }
-    if (fn === "audio_to_midi") {
+    if (AUDIO_FNS.has(fn)) {
       // Pyodide can't see the host filesystem — copy the audio file into
       // the virtual FS and rewrite the path before calling Python.
       const request = JSON.parse(payload);

@@ -8,9 +8,12 @@ import {
   AudioClip,
   AudioTrack,
   ClipSlot,
+  DataModelObject,
   MidiClip,
   MidiTrack,
+  Sample,
   Scene,
+  Simpler,
   type ActivationContext,
   type ExtensionContext,
   type Handle,
@@ -20,6 +23,7 @@ import {
 import { analyze, getPython } from "./python.js";
 import {
   renderArpeggiateForm,
+  renderAudioDetectDialog,
   renderAudioToMidiForm,
   renderBasslineForm,
   renderChordsDialog,
@@ -34,19 +38,24 @@ import {
   renderNotationPage,
   renderProgressionForm,
   renderRenderAudioForm,
+  renderSamplePitchDialog,
   renderScaleForm,
+  renderSceneKeyDialog,
   renderSketchForm,
   renderSubstitutionsDialog,
   renderSuggestionsDialog,
   renderTabsDialog,
   renderTabsForm,
   renderTransposeForm,
+  type AudioDetectResult,
   type ChordsResult,
   type KeyDefaults,
   type KeyResult,
   type MelodyAnalysis,
   type NotationResult,
   type Options,
+  type SamplePitchResult,
+  type SceneKeyResult,
   type SubstitutionsResult,
   type SuggestionsResult,
   type TabsResult,
@@ -156,11 +165,12 @@ export function activate(activation: ActivationContext) {
   ];
   const audioCommands: [label: string, id: string,
     run: (context: Context, handle: Handle) => Promise<void>][] = [
+    ["Detect Key & Chords", "pytheory.audio-detect", audioDetect],
     ["Convert to MIDI…", "pytheory.audio-to-midi", audioToMidi],
   ];
 
   const register = (
-    scope: "MidiClip" | "ClipSlot" | "Scene" | "AudioClip",
+    scope: "MidiClip" | "ClipSlot" | "Scene" | "AudioClip" | "Sample" | "Simpler",
     label: string,
     id: string,
     run: (context: Context, handle: Handle) => Promise<void>,
@@ -176,6 +186,9 @@ export function activate(activation: ActivationContext) {
   for (const [scope, label, id, run] of commands) register(scope, label, id, run);
   for (const [label, id, run] of sceneCommands) register("Scene", label, id, run);
   for (const [label, id, run] of audioCommands) register("AudioClip", label, id, run);
+  register("Scene", "Detect Scene Key", "pytheory.scene-key", detectSceneKey);
+  register("Sample", "Tune to Set Key", "pytheory.tune-sample", tuneSample);
+  register("Simpler", "Tune to Set Key", "pytheory.tune-simpler", tuneSample);
 
   console.log("pytheory extension activated.");
 }
@@ -590,39 +603,159 @@ interface TranscriptionResult {
   bpm: number;
 }
 
+/**
+ * A WAV to analyze for an audio clip: the clip's own file when it's a WAV,
+ * otherwise a pre-FX render of its arrangement region. Shows an error
+ * dialog and returns null when neither is possible.
+ */
+async function wavForAudioClip(
+  context: Context,
+  clip: AudioClip<typeof API_VERSION>,
+): Promise<string | null> {
+  const filePath = clip.filePath;
+  if (/\.wav$/i.test(filePath)) return filePath;
+  const parent = clip.parent;
+  if (parent instanceof AudioTrack && clip.endTime > clip.startTime) {
+    return (await context.ui.withinProgressDialog(
+      "Rendering audio…",
+      {},
+      () =>
+        context.resources.renderPreFxAudio(
+          parent,
+          clip.startTime,
+          clip.endTime,
+        ),
+    )) as string;
+  }
+  await showDialog(
+    context,
+    renderErrorDialog(
+      "Only WAV files can be analyzed directly. For other formats, place the clip in the Arrangement so its audio can be rendered first.",
+    ),
+    460,
+    220,
+  );
+  return null;
+}
+
+async function audioDetect(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, AudioClip);
+  const clipName = clip.name;
+  const wavPath = await wavForAudioClip(context, clip);
+  if (!wavPath) return;
+
+  const result = (await context.ui.withinProgressDialog(
+    "Listening…",
+    {},
+    () =>
+      analyze<AudioDetectResult>("audio_detect", {
+        hostPath: wavPath,
+        bpm: context.application.song.tempo,
+      }),
+  )) as AudioDetectResult & { error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 460, 220);
+    return;
+  }
+  await showDialog(context, renderAudioDetectDialog(clipName, result), 480, 420);
+}
+
+async function tuneSample(context: Context, handle: Handle) {
+  const target = context.getObjectFromHandle(handle, DataModelObject);
+  const sample =
+    target instanceof Simpler
+      ? target.sample
+      : target instanceof Sample
+        ? target
+        : null;
+  if (!sample) {
+    await showDialog(context, renderErrorDialog("No sample loaded here."), 420, 200);
+    return;
+  }
+
+  const filePath = sample.filePath;
+  if (!/\.wav$/i.test(filePath)) {
+    await showDialog(
+      context,
+      renderErrorDialog("Only WAV samples can be pitch-analyzed for now."),
+      440,
+      200,
+    );
+    return;
+  }
+
+  const setTonic = TONICS[context.application.song.rootNote] ?? null;
+  const result = (await context.ui.withinProgressDialog(
+    "Listening…",
+    {},
+    () =>
+      analyze<SamplePitchResult>("sample_pitch", {
+        hostPath: filePath,
+        setTonic,
+      }),
+  )) as SamplePitchResult & { error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 440, 200);
+    return;
+  }
+  await showDialog(
+    context,
+    renderSamplePitchDialog(path.basename(filePath), result),
+    460,
+    240,
+  );
+}
+
+async function detectSceneKey(context: Context, handle: Handle) {
+  const scene = context.getObjectFromHandle(handle, Scene);
+  const song = context.application.song;
+  const sceneIndex = song.scenes.findIndex((s) => s === scene);
+  if (sceneIndex < 0) {
+    await showDialog(context, renderErrorDialog("Couldn't locate this scene."), 420, 200);
+    return;
+  }
+
+  const clips: { name: string; notes: NoteDescription[] }[] = [];
+  for (const track of song.tracks) {
+    try {
+      const clip = track.clipSlots[sceneIndex]?.clip;
+      if (clip instanceof MidiClip) {
+        clips.push({ name: clip.name, notes: clip.notes });
+      }
+    } catch {
+      // skip slots that can't be read
+    }
+  }
+  if (clips.length === 0) {
+    await showDialog(
+      context,
+      renderErrorDialog("No MIDI clips in this scene."),
+      420,
+      200,
+    );
+    return;
+  }
+
+  const result = (await context.ui.withinProgressDialog(
+    "Analyzing scene…",
+    {},
+    () => analyze<SceneKeyResult>("scene_key", { clips }),
+  )) as SceneKeyResult & { error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+
+  const sceneName = scene.name || `Scene ${sceneIndex + 1}`;
+  await showDialog(context, renderSceneKeyDialog(sceneName, result), 460, 380);
+}
+
 async function audioToMidi(context: Context, handle: Handle) {
   const clip = context.getObjectFromHandle(handle, AudioClip);
   const clipName = clip.name;
   const song = context.application.song;
-
-  // Find a WAV to transcribe: the clip's own file when it's a WAV,
-  // otherwise render the arrangement region pre-FX (which yields a WAV).
-  let wavPath = clip.filePath;
-  if (!/\.wav$/i.test(wavPath)) {
-    const parent = clip.parent;
-    if (parent instanceof AudioTrack && clip.endTime > clip.startTime) {
-      wavPath = (await context.ui.withinProgressDialog(
-        "Rendering audio…",
-        {},
-        () =>
-          context.resources.renderPreFxAudio(
-            parent,
-            clip.startTime,
-            clip.endTime,
-          ),
-      )) as string;
-    } else {
-      await showDialog(
-        context,
-        renderErrorDialog(
-          "Only WAV files can be transcribed directly. For other formats, place the clip in the Arrangement so its audio can be rendered first.",
-        ),
-        460,
-        220,
-      );
-      return;
-    }
-  }
+  const wavPath = await wavForAudioClip(context, clip);
+  if (!wavPath) return;
 
   const params = await showForm(context, renderAudioToMidiForm(), 460, 260);
   if (!params) return;

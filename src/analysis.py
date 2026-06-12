@@ -910,6 +910,7 @@ def _beats(duration):
 
 def audio_to_midi(payload_json):
     """Transcribe a WAV file (in the virtual FS) into MIDI parts."""
+    _patch_scipy_for_wasm()
     params = json.loads(payload_json)
     path = params["path"]
     bpm = params.get("bpm")
@@ -956,6 +957,159 @@ def audio_to_midi(payload_json):
             "error": "No pitched material detected in this audio."
         })
     return json.dumps({"parts": parts, "bpm": score.bpm})
+
+
+_SCIPY_PATCHED = False
+
+
+def _patch_scipy_for_wasm():
+    """Make scipy's STFT framing safe under wasm32.
+
+    scipy's `_fft_helper` builds a hop-of-1 sliding window view and then
+    slices it by the real step. The intermediate view's *virtual* size is
+    n_samples x nperseg x 8 bytes — gigabytes for a few seconds of audio —
+    which numpy refuses on 32-bit address spaces. Re-frame with the true
+    step in the strides instead; the result is identical.
+    """
+    global _SCIPY_PATCHED
+    if _SCIPY_PATCHED:
+        return
+    import numpy as np
+    from scipy import fft as sp_fft
+    from scipy.signal import _spectral_py
+
+    def _fft_helper(x, win, detrend_func, nperseg, noverlap, nfft, sides):
+        if nperseg == 1 and noverlap == 0:
+            result = x[..., np.newaxis]
+        else:
+            step = nperseg - noverlap
+            n_frames = (x.shape[-1] - noverlap) // step
+            shape = x.shape[:-1] + (n_frames, nperseg)
+            strides = x.strides[:-1] + (step * x.strides[-1], x.strides[-1])
+            result = np.lib.stride_tricks.as_strided(
+                x, shape=shape, strides=strides, writeable=False
+            ).copy()  # overlapping frames must not alias for detrending
+        result = detrend_func(result)
+        result = win * result
+        if sides == "twosided":
+            func = sp_fft.fft
+        else:
+            result = result.real
+            func = sp_fft.rfft
+        return func(result, n=nfft)
+
+    _spectral_py._fft_helper = _fft_helper
+    _SCIPY_PATCHED = True
+
+
+def audio_detect(payload_json):
+    """Key, tempo, and chord progression from a WAV in the virtual FS."""
+    _patch_scipy_for_wasm()
+    params = json.loads(payload_json)
+    path = params["path"]
+    bpm = float(params.get("bpm", 120))
+
+    from pytheory.audio import detect_chords, estimate_tempo, load_wav
+
+    try:
+        samples, sample_rate = load_wav(path)
+        tempo = estimate_tempo(samples, sample_rate)
+        chord_track = detect_chords(samples, sample_rate, bpm=bpm)
+    except Exception as e:
+        return json.dumps({"error": f"Audio analysis failed: {e}"})
+
+    # Key from the full chord tones, not just the roots.
+    pitch_classes = []
+    for _, _, symbol in chord_track:
+        try:
+            pitch_classes.extend(
+                t.name for t in Chord.from_symbol(symbol.split("/")[0]).tones
+            )
+        except (ValueError, KeyError):
+            pass
+    key = Key.detect(*dict.fromkeys(pitch_classes)) if pitch_classes else None
+
+    return json.dumps({
+        "key": str(key) if key else None,
+        "tempo": round(tempo, 1) if tempo else None,
+        "chords": [
+            {"start": start, "duration": duration, "symbol": symbol}
+            for start, duration, symbol in chord_track
+        ],
+    })
+
+
+def sample_pitch(payload_json):
+    """Root pitch of a sample, and the transpose needed to reach a tonic."""
+    _patch_scipy_for_wasm()
+    params = json.loads(payload_json)
+    path = params["path"]
+    set_tonic = params.get("setTonic")
+
+    import math
+
+    from pytheory.audio import detect_pitch, load_wav
+
+    try:
+        samples, sample_rate = load_wav(path)
+        times, freqs, voiced = detect_pitch(samples, sample_rate)
+    except Exception as e:
+        return json.dumps({"error": f"Pitch analysis failed: {e}"})
+
+    pitched = [f for f, v in zip(freqs, voiced) if v and f > 0]
+    if not pitched:
+        return json.dumps({
+            "error": "No stable pitch detected — is this a tonal sample?"
+        })
+
+    pitched.sort()
+    freq = pitched[len(pitched) // 2]  # median is robust to onset wobble
+    exact = 69 + 12 * math.log2(freq / 440.0)
+    midi = round(exact)
+    cents = round((exact - midi) * 100)
+    tone = Tone.from_midi(midi)
+
+    result = {
+        "note": f"{tone.name}{tone.octave}",
+        "frequency": round(freq, 2),
+        "cents": cents,
+        "midi": midi,
+    }
+    if set_tonic in TONICS:
+        delta = (TONICS.index(set_tonic) - midi) % 12
+        if delta > 6:
+            delta -= 12
+        result["setTonic"] = set_tonic
+        result["transpose"] = delta
+    return json.dumps(result)
+
+
+def scene_key(payload_json):
+    """Key of a whole scene: all MIDI clips analyzed together and apart."""
+    params = json.loads(payload_json)
+    clips = params["clips"]
+
+    all_names = []
+    per_clip = []
+    for clip in clips:
+        pitches = [n["pitch"] for n in clip["notes"] if not n.get("muted")]
+        if not pitches:
+            continue
+        names = _note_names(pitches)
+        all_names.extend(names)
+        clip_key = Key.detect(*names)
+        per_clip.append({
+            "name": clip["name"],
+            "key": str(clip_key) if clip_key else None,
+        })
+
+    if not all_names:
+        return json.dumps({"error": "No MIDI notes found in this scene."})
+    key = Key.detect(*dict.fromkeys(all_names))
+    return json.dumps({
+        "key": str(key) if key else None,
+        "clips": per_clip,
+    })
 
 
 def transpose_to_key(payload_json):

@@ -66,12 +66,21 @@ Right-click a **scene**:
 
 - **Generate Song Sketch…** — one click, four new tracks at that scene:
   chords, bassline, melody, and drums, all in your chosen (or the Set's) key.
+- **Detect Scene Key** — analyzes every MIDI clip in the scene together,
+  with a per-clip breakdown.
 
 Right-click an **audio clip**:
 
+- **Detect Key & Chords** — pytheory's chromagram analysis on the audio
+  itself: key, estimated tempo, and the chord progression with bars.
 - **Convert to MIDI…** — transcribes the audio with pytheory's pitch
   tracker onto new MIDI tracks. Optionally splits full mixes into bass and
   melody parts, with quantization to taste.
+
+Right-click a **sample** (or a Simpler device):
+
+- **Tune to Set Key** — detects the sample's root pitch (note, Hz, cents)
+  and tells you the transpose needed to reach the Set's tonic.
 
 ## How it works
 
