@@ -122,6 +122,14 @@ def generate_progression(payload_json):
     if not numerals:
         return json.dumps({"error": "No chords in the progression."})
 
+    # pytheory wraps out-of-range numerals around the scale silently —
+    # reject anything that isn't a degree I–VII (with b/# and 7 modifiers).
+    valid = {"I", "II", "III", "IV", "V", "VI", "VII"}
+    for numeral in numerals:
+        base = numeral.rstrip("7").lstrip("b#").upper()
+        if base not in valid:
+            return json.dumps({"error": f"'{numeral}' isn't a Roman numeral I–VII."})
+
     try:
         key = Key(tonic, mode)
         chords = key.progression(*numerals)
@@ -207,7 +215,7 @@ def conform_to_scale(payload_json):
         # Nearest scale pitch class; ties resolve downward.
         best = min(
             scale_pcs,
-            key=lambda s: (min((pc - s) % 12, (s - pc) % 12), (s - pc) % 12),
+            key=lambda s: (min((pc - s) % 12, (s - pc) % 12), (pc - s) % 12),
         )
         delta = (best - pc) % 12
         if delta > 6:

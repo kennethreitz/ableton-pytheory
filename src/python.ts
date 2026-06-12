@@ -53,9 +53,17 @@ export function getPython(): Worker {
   return worker;
 }
 
-/** Run one of the analysis.py functions over a clip's notes. */
+export type AnalysisFunction =
+  | "detect_key"
+  | "detect_chords"
+  | "get_options"
+  | "generate_progression"
+  | "generate_scale"
+  | "conform_to_scale";
+
+/** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(
-  fn: "detect_key" | "detect_chords",
+  fn: AnalysisFunction,
   notes: unknown,
 ): Promise<T & { error?: string }> {
   const w = getPython();
