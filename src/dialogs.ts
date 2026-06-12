@@ -24,6 +24,7 @@ export interface Options {
   progressions: Record<string, string[]>;
   drumPatterns: string[];
   drumFills: string[];
+  instruments: string[];
 }
 
 function escapeHtml(text: string): string {
@@ -450,6 +451,43 @@ export function renderTabsDialog(clipName: string, result: TabsResult): string {
        .card .dim { margin: 6px 0 0; font-size: 11px; }
      </style>
      <div class="cards">${cards}</div>`,
+  );
+}
+
+export function renderTransposeForm(
+  options: Options,
+  detected: KeyResult,
+): string {
+  const scaleDefault =
+    detected.mode && options.scales.includes(detected.mode)
+      ? detected.mode
+      : "major";
+  const scaleChoices = options.scales.map((value) => ({ value }));
+  const tonicChoices = options.tonics.map((value) => ({ value }));
+  const fields = [
+    field("From key", select("sourceTonic", tonicChoices, detected.tonic ?? "C")),
+    field("From scale", select("sourceScale", scaleChoices, scaleDefault)),
+    field("To key", select("targetTonic", tonicChoices, detected.tonic ?? "C")),
+    field("To scale", select("targetScale", scaleChoices, scaleDefault)),
+  ].join("");
+  const subtitle = detected.key
+    ? `Detected key: ${detected.key}. Maps notes by scale degree (C major → C minor moves E to E♭).`
+    : "Maps notes by scale degree (C major → C minor moves E to E♭).";
+  return formPage("Transpose to Key", subtitle, fields, "Transpose");
+}
+
+export function renderRenderAudioForm(options: Options): string {
+  const fields = [
+    field(
+      "Instrument",
+      select("instrument", options.instruments.map((value) => ({ value })), "piano"),
+    ),
+  ].join("");
+  return formPage(
+    "Render to Audio",
+    "Renders this clip with pytheory's synth engine onto a new audio track.",
+    fields,
+    "Render",
   );
 }
 

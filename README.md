@@ -21,6 +21,12 @@ Right-click a **MIDI clip**:
   up-and-down at 32nd–quarter rates).
 - **Conform to Scale…** — snaps out-of-scale notes to the nearest scale tone
   (key prefilled from detection), as one undo step.
+- **Transpose to Key…** — scale-degree-aware transposition: C major → C minor
+  moves E to E♭, not everything chromatically.
+- **Smooth Voicings** — re-voices each chord (inversions and octaves) to
+  minimize voice-leading movement from the previous one.
+- **Render to Audio…** — renders the clip with pytheory's synth engine
+  (46 instruments) onto a new audio track. No plugins involved.
 
 Right-click an empty **clip slot**:
 

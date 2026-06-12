@@ -5,10 +5,11 @@ extension to render. Clip notes are NoteDescription objects from the
 Extensions SDK: pitch, startTime, duration, muted, ...
 """
 
+import base64
 import json
 
-from pytheory import Chord, Fretboard, Key, Tone, TonedScale
-from pytheory.rhythm import Pattern
+from pytheory import Chord, Fretboard, Key, Tone, TonedScale, render_score
+from pytheory.rhythm import INSTRUMENTS, Pattern, Score, _RawDuration
 from pytheory.scales import PROGRESSIONS
 # Not the package-level Scale — pytheory/__init__ aliases that to TonedScale,
 # which lacks the detect/recommend static methods.
@@ -41,6 +42,7 @@ def get_options(_payload=None):
         },
         "drumPatterns": Pattern.list_presets(),
         "drumFills": Pattern.list_fills(),
+        "instruments": list(INSTRUMENTS),
     })
 
 
@@ -419,6 +421,165 @@ def arpeggiate(payload_json):
             "error": "No chords to arpeggiate — the clip looks monophonic."
         })
     return json.dumps({"notes": result, "arpeggiated": arpeggiated})
+
+
+def transpose_to_key(payload_json):
+    """Scale-degree-aware transposition (C major -> C minor moves E to Eb)."""
+    params = json.loads(payload_json)
+    notes = params["notes"]
+
+    try:
+        src = _scale_degrees(params["sourceTonic"], params["sourceScale"])
+        tgt = _scale_degrees(params["targetTonic"], params["targetScale"])
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Unknown scale: {e}"})
+    if len(src) != len(tgt):
+        return json.dumps({
+            "error": "Source and target scales have different numbers of degrees."
+        })
+
+    # Shortest chromatic move between the two tonics.
+    shift = ((tgt[0] - src[0] + 6) % 12) - 6
+
+    changed = 0
+    transposed = []
+    for note in notes:
+        new = dict(note)
+        if not note.get("muted"):
+            pitch = note["pitch"]
+            pc = pitch % 12
+            if pc in src:
+                index = src.index(pc)
+                rel_src = (pc - src[0]) % 12
+                rel_tgt = (tgt[index] - tgt[0]) % 12
+                new_pitch = pitch + shift + (rel_tgt - rel_src)
+            else:
+                new_pitch = pitch + shift  # chromatic passing note
+            new_pitch = min(127, max(0, new_pitch))
+            if new_pitch != pitch:
+                new["pitch"] = new_pitch
+                changed += 1
+        transposed.append(new)
+
+    return json.dumps({"notes": transposed, "changed": changed})
+
+
+def _voicing_candidates(pitches):
+    """Inversions of a chord, each at three octaves."""
+    base = sorted(pitches)
+    shapes = [list(base)]
+    up = list(base)
+    down = list(base)
+    for _ in range(len(base) - 1):
+        up = sorted(up[1:] + [up[0] + 12])
+        down = sorted([down[-1] - 12] + down[:-1])
+        shapes.append(list(up))
+        shapes.append(list(down))
+    return [
+        [p + octave for p in shape]
+        for shape in shapes
+        for octave in (-12, 0, 12)
+    ]
+
+
+def smooth_voicings(payload_json):
+    """Re-voice each chord to minimize movement from the previous one."""
+    params = json.loads(payload_json)
+    notes = [n for n in params["notes"] if not n.get("muted")]
+
+    result = []
+    previous = None
+    revoiced = 0
+    for cluster in _cluster_chords(notes):
+        ordered = sorted(cluster["notes"], key=lambda n: n["pitch"])
+        pitches = [n["pitch"] for n in ordered]
+        if len(set(pitches)) < 2:
+            result.extend(cluster["notes"])
+            continue
+
+        if previous is None:
+            voiced = pitches
+        else:
+            center = sum(pitches) / len(pitches)
+
+            def cost(candidate):
+                # Total movement from the previous chord (nearest-pitch,
+                # both directions), plus a drift penalty to stay near the
+                # chord's original register.
+                movement = sum(
+                    min(abs(p - q) for q in previous) for p in candidate
+                ) + sum(min(abs(p - q) for q in candidate) for p in previous)
+                drift = abs(sum(candidate) / len(candidate) - center)
+                return movement + 0.5 * drift
+
+            voiced = min(_voicing_candidates(pitches), key=cost)
+            if voiced != pitches:
+                revoiced += 1
+
+        if any(not 0 <= p <= 127 for p in voiced):
+            voiced = pitches  # out of MIDI range — keep the original
+        for note, pitch in zip(ordered, voiced):
+            new = dict(note)
+            new["pitch"] = pitch
+            result.append(new)
+        previous = voiced
+
+    if previous is None:
+        return json.dumps({
+            "error": "No chords to re-voice — the clip looks monophonic."
+        })
+    return json.dumps({"notes": result, "revoiced": revoiced})
+
+
+def render_audio(payload_json):
+    params = json.loads(payload_json)
+    notes = [n for n in params["notes"] if not n.get("muted")]
+    instrument = params.get("instrument", "piano")
+    bpm = float(params.get("bpm", 120))
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+    if instrument not in INSTRUMENTS:
+        return json.dumps({"error": f"Unknown instrument: {instrument}"})
+
+    # Split overlapping notes into monophonic voices, one Part per voice.
+    notes.sort(key=lambda n: (n["startTime"], n["pitch"]))
+    voices = []
+    for note in notes:
+        voice = next(
+            (v for v in voices if v["end"] <= note["startTime"] + 1e-6), None
+        )
+        if voice is None:
+            if len(voices) >= 24:
+                continue  # cap polyphony to keep render times sane
+            voice = {"end": 0.0, "events": []}
+            voices.append(voice)
+        voice["events"].append(note)
+        voice["end"] = note["startTime"] + note["duration"]
+
+    score = Score(bpm=bpm)
+    for i, voice in enumerate(voices):
+        part = score.part(f"voice {i + 1}", instrument=instrument)
+        position = 0.0
+        for note in voice["events"]:
+            gap = note["startTime"] - position
+            if gap > 1e-6:
+                part.rest(_RawDuration(gap))
+            part.add(
+                Tone.from_midi(note["pitch"]),
+                _RawDuration(note["duration"]),
+                velocity=int(note.get("velocity", 100)),
+            )
+            position = note["startTime"] + note["duration"]
+
+    import numpy as np
+
+    samples = render_score(score)
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    return json.dumps({
+        "pcmBase64": base64.b64encode(pcm).decode(),
+        "sampleRate": 44100,
+        "channels": int(samples.shape[1]),
+    })
 
 
 def conform_to_scale(payload_json):

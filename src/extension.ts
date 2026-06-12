@@ -1,3 +1,6 @@
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 import {
   initialize,
   ClipSlot,
@@ -19,9 +22,11 @@ import {
   renderKeyDialog,
   renderMessageDialog,
   renderProgressionForm,
+  renderRenderAudioForm,
   renderScaleForm,
   renderTabsDialog,
   renderTabsForm,
+  renderTransposeForm,
   type ChordsResult,
   type KeyDefaults,
   type KeyResult,
@@ -79,6 +84,9 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Harmonize…", "pytheory.harmonize", harmonize],
     ["MidiClip", "Arpeggiate…", "pytheory.arpeggiate", arpeggiate],
     ["MidiClip", "Conform to Scale…", "pytheory.conform", conformToScale],
+    ["MidiClip", "Transpose to Key…", "pytheory.transpose", transposeToKey],
+    ["MidiClip", "Smooth Voicings", "pytheory.smooth-voicings", smoothVoicings],
+    ["MidiClip", "Render to Audio…", "pytheory.render-audio", renderAudio],
     ["ClipSlot", "Generate Progression…", "pytheory.generate-progression", generateProgression],
     ["ClipSlot", "Generate Scale…", "pytheory.generate-scale", generateScale],
     ["ClipSlot", "Generate Drum Pattern…", "pytheory.generate-drums", generateDrums],
@@ -189,6 +197,193 @@ async function conformToScale(context: Context, handle: Handle) {
     420,
     200,
   );
+}
+
+async function transposeToKey(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const [options, detected] = (await context.ui.withinProgressDialog(
+    "Analyzing…",
+    {},
+    () =>
+      Promise.all([
+        analyze<Options>("get_options", null),
+        analyze<KeyResult>("detect_key", notes),
+      ]),
+  )) as [Options, KeyResult];
+
+  if (!detected.tonic) {
+    const fromSet = songKey(context, options);
+    if (fromSet.source === "set") {
+      detected.tonic = fromSet.tonic;
+      detected.mode = fromSet.scale;
+    }
+  }
+
+  const params = await showForm(
+    context,
+    renderTransposeForm(options, detected),
+    440,
+    320,
+  );
+  if (!params) return;
+
+  const result = await analyze<{ notes: NoteDescription[]; changed: number }>(
+    "transpose_to_key",
+    { notes, ...params },
+  );
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+
+  context.withinTransaction(() => {
+    clip.notes = result.notes;
+  });
+  await showDialog(
+    context,
+    renderMessageDialog(
+      "Transpose to Key",
+      `Moved ${result.changed} ${result.changed === 1 ? "note" : "notes"} — now in ${params.targetTonic} ${params.targetScale}.`,
+    ),
+    420,
+    200,
+  );
+}
+
+async function smoothVoicings(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const result = (await context.ui.withinProgressDialog(
+    "Re-voicing…",
+    {},
+    () =>
+      analyze<{ notes: NoteDescription[]; revoiced: number }>(
+        "smooth_voicings",
+        { notes },
+      ),
+  )) as { notes: NoteDescription[]; revoiced: number; error?: string };
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+
+  if (result.revoiced === 0) {
+    await showDialog(
+      context,
+      renderMessageDialog("Smooth Voicings", "Voicings already minimal — nothing to change."),
+      420,
+      200,
+    );
+    return;
+  }
+
+  context.withinTransaction(() => {
+    clip.notes = result.notes;
+  });
+  await showDialog(
+    context,
+    renderMessageDialog(
+      "Smooth Voicings",
+      `Re-voiced ${result.revoiced} ${result.revoiced === 1 ? "chord" : "chords"} for smoother voice leading.`,
+    ),
+    420,
+    200,
+  );
+}
+
+interface RenderedAudio {
+  pcmBase64: string;
+  sampleRate: number;
+  channels: number;
+}
+
+async function renderAudio(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const options = await analyze<Options>("get_options", null);
+  const params = await showForm(context, renderRenderAudioForm(options), 440, 220);
+  if (!params) return;
+
+  const song = context.application.song;
+  const instrument = String(params.instrument);
+
+  await context.ui.withinProgressDialog(
+    `Rendering with ${instrument}…`,
+    {},
+    async (update) => {
+      const rendered = await analyze<RenderedAudio>("render_audio", {
+        notes,
+        instrument,
+        bpm: song.tempo,
+      });
+      if (rendered.error) throw new Error(rendered.error);
+
+      await update("Importing into project…", 80);
+      const tempDir =
+        context.environment.tempDirectory ??
+        context.environment.storageDirectory;
+      if (!tempDir) throw new Error("No writable directory available.");
+      const wavPath = path.join(
+        tempDir,
+        `pytheory-${instrument}-${Date.now()}.wav`,
+      );
+      writeWav(
+        wavPath,
+        Buffer.from(rendered.pcmBase64, "base64"),
+        rendered.sampleRate,
+        rendered.channels,
+      );
+      const imported = await context.resources.importIntoProject(wavPath);
+
+      await update("Creating audio track…", 95);
+      const track = await song.createAudioTrack();
+      context.withinTransaction(() => {
+        track.name = `${clipName} (${instrument})`;
+      });
+      const slot = track.clipSlots[0];
+      if (slot) {
+        await slot.createAudioClip({ filePath: imported });
+      }
+    },
+  );
+}
+
+function writeWav(
+  filePath: string,
+  pcm: Buffer,
+  sampleRate: number,
+  channels: number,
+) {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16); // PCM chunk size
+  header.writeUInt16LE(1, 20); // PCM format
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * channels * 2, 28); // byte rate
+  header.writeUInt16LE(channels * 2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits per sample
+  fs.writeFileSync(filePath, Buffer.concat([header, pcm]));
 }
 
 async function generateProgression(context: Context, handle: Handle) {
