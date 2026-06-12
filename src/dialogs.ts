@@ -22,6 +22,8 @@ export interface Options {
   tonics: string[];
   scales: string[];
   progressions: Record<string, string[]>;
+  drumPatterns: string[];
+  drumFills: string[];
 }
 
 function escapeHtml(text: string): string {
@@ -204,7 +206,22 @@ export function renderChordsDialog(
   );
 }
 
-export function renderProgressionForm(options: Options): string {
+export interface KeyDefaults {
+  tonic: string;
+  scale: string;
+  source: "set" | "none";
+}
+
+function keySubtitle(base: string, defaults: KeyDefaults): string {
+  return defaults.source === "set"
+    ? `${base} Key prefilled from the Set: ${defaults.tonic} ${defaults.scale}.`
+    : base;
+}
+
+export function renderProgressionForm(
+  options: Options,
+  defaults: KeyDefaults,
+): string {
   const progressionChoices = [
     ...Object.entries(options.progressions).map(([name, numerals]) => ({
       value: name,
@@ -213,8 +230,8 @@ export function renderProgressionForm(options: Options): string {
     { value: "custom", label: "Custom…" },
   ];
   const fields = [
-    field("Key", select("tonic", options.tonics.map((value) => ({ value })), "C")),
-    field("Mode", select("mode", options.scales.map((value) => ({ value })), "major")),
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
+    field("Mode", select("mode", options.scales.map((value) => ({ value })), defaults.scale)),
     field(
       "Progression",
       select("progression", progressionChoices, "I-V-vi-IV",
@@ -237,16 +254,16 @@ export function renderProgressionForm(options: Options): string {
   ].join("");
   return formPage(
     "Generate Progression",
-    "Creates a MIDI clip with the chosen chord progression.",
+    keySubtitle("Creates a MIDI clip with the chosen chord progression.", defaults),
     fields,
     "Generate",
   );
 }
 
-export function renderScaleForm(options: Options): string {
+export function renderScaleForm(options: Options, defaults: KeyDefaults): string {
   const fields = [
-    field("Key", select("tonic", options.tonics.map((value) => ({ value })), "C")),
-    field("Scale", select("scale", options.scales.map((value) => ({ value })), "major")),
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
+    field("Scale", select("scale", options.scales.map((value) => ({ value })), defaults.scale)),
     field("Octave", select("octave", OCTAVES, "4")),
     field(
       "Note length",
@@ -264,9 +281,99 @@ export function renderScaleForm(options: Options): string {
   ].join("");
   return formPage(
     "Generate Scale",
-    "Creates a MIDI clip running through the chosen scale.",
+    keySubtitle("Creates a MIDI clip running through the chosen scale.", defaults),
     fields,
     "Generate",
+  );
+}
+
+export function renderDrumsForm(options: Options): string {
+  const fields = [
+    field(
+      "Pattern",
+      select("pattern", options.drumPatterns.map((value) => ({ value })), "house"),
+    ),
+    field(
+      "Repeats",
+      select("repeats", [
+        { value: "1" },
+        { value: "2" },
+        { value: "4" },
+        { value: "8" },
+      ], "4"),
+    ),
+    field(
+      "Fill (last cycle)",
+      select("fill", [
+        { value: "", label: "None" },
+        ...options.drumFills.map((value) => ({ value })),
+      ], ""),
+    ),
+  ].join("");
+  return formPage(
+    "Generate Drum Pattern",
+    "Creates a MIDI clip on the General MIDI drum map (kick = C1).",
+    fields,
+    "Generate",
+  );
+}
+
+export function renderHarmonizeForm(
+  options: Options,
+  detected: KeyResult,
+): string {
+  const scaleDefault =
+    detected.mode && options.scales.includes(detected.mode)
+      ? detected.mode
+      : "major";
+  const fields = [
+    field(
+      "Interval",
+      select("interval", [
+        { value: "third", label: "Diatonic third" },
+        { value: "sixth", label: "Diatonic sixth" },
+        { value: "triad", label: "Full triad" },
+        { value: "octave", label: "Octave" },
+      ], "third"),
+    ),
+    field(
+      "Direction",
+      select("direction", [{ value: "above" }, { value: "below" }], "above"),
+    ),
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), detected.tonic ?? "C")),
+    field("Scale", select("scale", options.scales.map((value) => ({ value })), scaleDefault)),
+  ].join("");
+  const subtitle = detected.key
+    ? `Detected key: ${detected.key}. Adds harmony notes to the melody.`
+    : "Adds harmony notes to the melody.";
+  return formPage("Harmonize", subtitle, fields, "Harmonize");
+}
+
+export function renderArpeggiateForm(): string {
+  const fields = [
+    field(
+      "Style",
+      select("style", [
+        { value: "up", label: "Up" },
+        { value: "down", label: "Down" },
+        { value: "updown", label: "Up & down" },
+      ], "up"),
+    ),
+    field(
+      "Rate",
+      select("rate", [
+        { value: "0.125", label: "32nd" },
+        { value: "0.25", label: "16th" },
+        { value: "0.5", label: "8th" },
+        { value: "1", label: "Quarter" },
+      ], "0.25"),
+    ),
+  ].join("");
+  return formPage(
+    "Arpeggiate",
+    "Replaces each block chord with an arpeggio over its duration.",
+    fields,
+    "Arpeggiate",
   );
 }
 
@@ -286,6 +393,64 @@ export function renderConformForm(
     field("Scale", select("scale", options.scales.map((value) => ({ value })), scaleDefault)),
   ].join("");
   return formPage("Conform to Scale", detectedLine, fields, "Conform");
+}
+
+export interface TabsResult {
+  instrument: string;
+  key: string | null;
+  chords: { symbol: string; tab: string | null; bars: number[] }[];
+}
+
+export function renderTabsForm(): string {
+  const fields = [
+    field(
+      "Instrument",
+      select("instrument", [
+        { value: "guitar", label: "Guitar" },
+        { value: "ukulele", label: "Ukulele" },
+        { value: "bass", label: "Bass" },
+        { value: "mandolin", label: "Mandolin" },
+        { value: "banjo", label: "Banjo" },
+      ], "guitar"),
+    ),
+  ].join("");
+  return formPage(
+    "Guitar Tabs",
+    "Shows fingering charts for the chords in this clip.",
+    fields,
+    "Show Tabs",
+  );
+}
+
+export function renderTabsDialog(clipName: string, result: TabsResult): string {
+  const cards = result.chords
+    .map((c) => {
+      const body = c.tab
+        ? `<pre class="tab">${escapeHtml(c.tab)}</pre>`
+        : `<p class="dim">no chart</p>`;
+      return `<div class="card">
+        <p class="chord-name">${escapeHtml(c.symbol)}</p>
+        ${body}
+        <p class="dim">bar ${c.bars.join(", ")}</p>
+      </div>`;
+    })
+    .join("");
+  const keyNote = result.key ? ` — key of ${result.key}` : "";
+  return infoPage(
+    `${result.instrument[0].toUpperCase()}${result.instrument.slice(1)} Tabs`,
+    `${clipName}${keyNote}`,
+    `<style>
+       .cards { display: flex; flex-wrap: wrap; gap: 12px; }
+       .card {
+         background: var(--input-bg); border-radius: 4px;
+         padding: 8px 12px; min-width: 110px;
+       }
+       .chord-name { color: var(--accent); font-size: 15px; margin: 0 0 6px; }
+       .tab { font-family: monospace; font-size: 12px; line-height: 1.5; margin: 0; }
+       .card .dim { margin: 6px 0 0; font-size: 11px; }
+     </style>
+     <div class="cards">${cards}</div>`,
+  );
 }
 
 export function renderMessageDialog(title: string, message: string): string {

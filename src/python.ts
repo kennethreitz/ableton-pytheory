@@ -59,7 +59,11 @@ export type AnalysisFunction =
   | "get_options"
   | "generate_progression"
   | "generate_scale"
-  | "conform_to_scale";
+  | "generate_drums"
+  | "conform_to_scale"
+  | "harmonize"
+  | "arpeggiate"
+  | "guitar_tabs";
 
 /** Run one of the analysis.py functions with a JSON payload. */
 export async function analyze<T>(

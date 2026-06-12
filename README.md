@@ -13,6 +13,12 @@ Right-click a **MIDI clip**:
 - **Detect Chords** — clusters notes by onset, names each chord
   (`D minor 7th`), gives its lead-sheet symbol (`Dm7`) and Roman numeral
   function in the detected key (`ii`).
+- **Guitar Tabs…** — fingering charts for the clip's chords, on guitar,
+  ukulele, bass, mandolin, or banjo.
+- **Harmonize…** — adds diatonic thirds, sixths, full triads, or octaves
+  above or below the melody, in the detected key.
+- **Arpeggiate…** — replaces block chords with arpeggios (up, down, or
+  up-and-down at 32nd–quarter rates).
 - **Conform to Scale…** — snaps out-of-scale notes to the nearest scale tone
   (key prefilled from detection), as one undo step.
 
@@ -23,6 +29,9 @@ Right-click an empty **clip slot**:
   `I vi ii V7`) and get a MIDI clip of the chords.
 - **Generate Scale…** — write any of pytheory's scales as a runnable clip,
   up or up-and-down.
+- **Generate Drum Pattern…** — 100 preset patterns (house, bossa nova,
+  teental, drum and bass, second line…) with 37 optional fills, written to
+  the General MIDI drum map.
 
 ## How it works
 
