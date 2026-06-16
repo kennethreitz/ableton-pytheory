@@ -315,7 +315,7 @@ async function suggestNextChord(context: Context, handle: Handle) {
   const html = result.error
     ? renderErrorDialog(result.error)
     : renderSuggestionsDialog(result);
-  await showDialog(context, html, 480, 380);
+  await showDialog(context, html, 520, 560);
 }
 
 async function chordSubstitutions(context: Context, handle: Handle) {

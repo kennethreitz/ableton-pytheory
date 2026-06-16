@@ -559,9 +559,20 @@ export function renderMelodyAnalysisDialog(
 
 export interface SuggestionsResult {
   key: string;
-  lastChord: { symbol: string; numeral: string };
-  suggestions: { numeral: string; symbol: string; notes: string[]; count: number }[];
+  lastChord: { symbol: string; numeral: string; function?: string | null };
+  suggestions: {
+    numeral: string; symbol: string; notes: string[]; count: number;
+    function?: string | null;
+  }[];
+  families?: Record<string, string[]>;
+  neighbors?: { direction: string; key: string; sharedChords: string[] }[];
 }
+
+const FUNCTION_LABEL: Record<string, string> = {
+  tonic: "Tonic",
+  subdominant: "Subdominant",
+  dominant: "Dominant",
+};
 
 export function renderSuggestionsDialog(result: SuggestionsResult): string {
   const rows = result.suggestions
@@ -569,19 +580,60 @@ export function renderSuggestionsDialog(result: SuggestionsResult): string {
       (s) => `<tr>
         <td>${escapeHtml(s.symbol)}</td>
         <td>${escapeHtml(s.numeral)}</td>
+        <td class="dim">${s.function ? escapeHtml(FUNCTION_LABEL[s.function] ?? s.function) : ""}</td>
         <td class="dim">${s.notes.map(escapeHtml).join(" ")}</td>
         <td class="dim">${s.count > 0 ? `seen ${s.count}×` : "diatonic"}</td>
       </tr>`,
     )
     .join("");
+
+  const families = result.families
+    ? `<h3>Interchangeable by function</h3>
+       <p class="dim">Chords in a row do the same harmonic job — swap one for another.</p>
+       <table>
+         ${(["tonic", "subdominant", "dominant"] as const)
+           .filter((fn) => result.families?.[fn]?.length)
+           .map((fn) => {
+             const current =
+               result.lastChord.function === fn
+                 ? ` <span class="dim">◀ current</span>`
+                 : "";
+             return `<tr><td>${escapeHtml(FUNCTION_LABEL[fn])}</td>
+               <td>${(result.families?.[fn] ?? []).map(escapeHtml).join(", ")}${current}</td></tr>`;
+           })
+           .join("")}
+       </table>`
+    : "";
+
+  const neighbors = result.neighbors?.length
+    ? `<h3>Modulate (circle of fifths)</h3>
+       <table>
+         <tr><th>Direction</th><th>Key</th><th>Shared chords (pivots)</th></tr>
+         ${result.neighbors
+           .map(
+             (n) => `<tr>
+               <td>${escapeHtml(n.direction === "dominant" ? "a fifth up" : "a fifth down")}</td>
+               <td>${escapeHtml(n.key)}</td>
+               <td class="dim">${n.sharedChords.map(escapeHtml).join(", ")}</td>
+             </tr>`,
+           )
+           .join("")}
+       </table>`
+    : "";
+
+  const lastFn = result.lastChord.function
+    ? `, ${(FUNCTION_LABEL[result.lastChord.function] ?? result.lastChord.function).toLowerCase()}`
+    : "";
   return infoPage(
     "Suggest Next Chord",
-    `Key of ${result.key} — after ${result.lastChord.symbol} (${result.lastChord.numeral})`,
+    `Key of ${result.key} — after ${result.lastChord.symbol} (${result.lastChord.numeral}${lastFn})`,
     `<table>
-       <tr><th>Chord</th><th>Numeral</th><th>Notes</th><th>Why</th></tr>
+       <tr><th>Chord</th><th>Numeral</th><th>Function</th><th>Notes</th><th>Why</th></tr>
        ${rows}
      </table>
-     <p class="dim">Ranked by how often this move appears in pytheory's progression corpus.</p>`,
+     <p class="dim">Ranked by how often this move appears in pytheory's progression corpus.</p>
+     ${families}
+     ${neighbors}`,
   );
 }
 

@@ -546,6 +546,14 @@ def _transitions():
     return counts
 
 
+def _chord_root_pc(chord):
+    """Pitch class (0–11) of a chord's root, via its identified name."""
+    name = chord.identify()
+    if not name:
+        return chord.tones[0].midi % 12
+    return _root_pc(name.split()[0])
+
+
 def _chord_for_numeral(key, numeral):
     try:
         chord = key.progression(numeral)[0]
@@ -587,21 +595,56 @@ def suggest_next_chord(notes_json):
     if not ranked:  # no corpus data — fall back to the pillars of the key
         ranked = [("I", 0), ("IV", 0), ("V", 0), ("vi", 0)]
 
+    # Group the key's diatonic chords by harmonic function so the user can
+    # see which chords are interchangeable (same function ≈ same job).
+    fams = key.chords_by_function()
+    fam_roots = {
+        fn: {_chord_root_pc(c) for c in chords} for fn, chords in fams.items()
+    }
+
+    def function_of(pc):
+        for fn, roots in fam_roots.items():
+            if pc in roots:
+                return fn
+        return None
+
     suggestions = []
     for next_numeral, count in ranked[:6]:
         symbol, tones = _chord_for_numeral(key, next_numeral)
         if symbol:
+            pc = Tone.from_string(tones[0]).midi % 12 if tones else None
             suggestions.append({
                 "numeral": next_numeral,
                 "symbol": symbol,
                 "notes": tones,
                 "count": count,
+                "function": function_of(pc) if pc is not None else None,
             })
+
+    families = {
+        fn: [_chord_label(c) for c in chords] for fn, chords in fams.items()
+    }
+    last_function = function_of(_chord_root_pc(last))
+
+    # Circle-of-fifths neighbours (a fifth either way) and the chords they
+    # share with this key — the smoothest places to modulate to.
+    cof = key.circle_of_fifths()
+    neighbors = [
+        {
+            "direction": direction,
+            "key": str(cof[direction]["key"]),
+            "sharedChords": cof[direction]["shared_chords"],
+        }
+        for direction in ("dominant", "subdominant")
+    ]
 
     return json.dumps({
         "key": str(key),
-        "lastChord": {"symbol": _chord_label(last), "numeral": numeral},
+        "lastChord": {"symbol": _chord_label(last), "numeral": numeral,
+                      "function": last_function},
         "suggestions": suggestions,
+        "families": families,
+        "neighbors": neighbors,
     })
 
 
