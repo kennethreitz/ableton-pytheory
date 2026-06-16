@@ -35,6 +35,7 @@ import {
   renderMelodyAnalysisDialog,
   renderMelodyForm,
   renderMessageDialog,
+  renderApplyEffectsForm,
   renderNotationPage,
   renderProgressionForm,
   renderRenderAudioForm,
@@ -169,6 +170,7 @@ export function activate(activation: ActivationContext) {
     run: (context: Context, handle: Handle) => Promise<void>][] = [
     ["Detect Key & Chords", "pytheory.audio-detect", audioDetect],
     ["Convert to MIDI…", "pytheory.audio-to-midi", audioToMidi],
+    ["Apply Effects…", "pytheory.apply-effects", applyEffects],
   ];
 
   const register = (
@@ -921,6 +923,57 @@ interface RenderedAudio {
   pcmBase64: string;
   sampleRate: number;
   channels: number;
+  name?: string;
+}
+
+async function applyEffects(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, AudioClip);
+  const clipName = clip.name;
+  const wavPath = await wavForAudioClip(context, clip);
+  if (!wavPath) return;
+
+  const params = await showForm(context, renderApplyEffectsForm(), 460, 600);
+  if (!params) return;
+
+  const song = context.application.song;
+  await context.ui.withinProgressDialog(
+    "Applying effects…",
+    {},
+    async (update) => {
+      const rendered = await analyze<RenderedAudio>("apply_effects", {
+        hostPath: wavPath,
+        clipName,
+        ...params,
+      });
+      if (rendered.error) throw new Error(rendered.error);
+
+      await update("Importing into project…", 80);
+      const wavOut = path.join(
+        writableDir(context),
+        `pytheory-fx-${Date.now()}.wav`,
+      );
+      writeWav(
+        wavOut,
+        Buffer.from(rendered.pcmBase64, "base64"),
+        rendered.sampleRate,
+        rendered.channels,
+      );
+      const imported = await context.resources.importIntoProject(wavOut);
+
+      await update("Creating audio track…", 95);
+      const track = await song.createAudioTrack();
+      context.withinTransaction(() => {
+        track.name = rendered.name ?? `${clipName} (fx)`;
+      });
+      const slot = await slotOnNewTrack(track, 0);
+      if (!slot) {
+        throw new Error(
+          `The new audio track reported no clip slots — the rendered file was imported to ${imported}.`,
+        );
+      }
+      await slot.createAudioClip({ filePath: imported });
+    },
+  );
 }
 
 async function renderAudio(context: Context, handle: Handle) {

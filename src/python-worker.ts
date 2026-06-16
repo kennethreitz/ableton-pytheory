@@ -114,7 +114,7 @@ const pythonPromise = bootPython();
 let scipyLoaded: Promise<unknown> | null = null;
 
 // Functions that analyze a host-side audio file.
-const AUDIO_FNS = new Set(["audio_to_midi", "audio_detect", "sample_pitch"]);
+const AUDIO_FNS = new Set(["audio_to_midi", "audio_detect", "sample_pitch", "apply_effects"]);
 
 async function handleRequest({ id, fn, payload }: Request) {
   try {

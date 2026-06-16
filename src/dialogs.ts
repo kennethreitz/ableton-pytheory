@@ -749,6 +749,52 @@ export function renderRenderAudioForm(options: Options): string {
   );
 }
 
+function numField(name: string, value: string,
+                  opts: { step?: string; min?: string; max?: string } = {}): string {
+  const attrs = [
+    `type="number"`, `name="${escapeHtml(name)}"`, `value="${escapeHtml(value)}"`,
+    opts.step ? `step="${opts.step}"` : "",
+    opts.min !== undefined ? `min="${opts.min}"` : "",
+    opts.max !== undefined ? `max="${opts.max}"` : "",
+  ].filter(Boolean).join(" ");
+  return `<input ${attrs}>`;
+}
+
+// pytheory's reverb spaces: the algorithmic plate plus 7 convolution IRs.
+const REVERB_TYPES = [
+  { value: "algorithmic", label: "Algorithmic" },
+  { value: "taj_mahal", label: "Taj Mahal (12s)" },
+  { value: "cathedral", label: "Cathedral" },
+  { value: "plate", label: "Plate" },
+  { value: "spring", label: "Spring" },
+  { value: "cave", label: "Cave" },
+  { value: "parking_garage", label: "Parking garage" },
+  { value: "canyon", label: "Canyon" },
+];
+
+export function renderApplyEffectsForm(): string {
+  const fields = [
+    `<p class="dim">pytheory's effect chain, applied to this clip's audio onto a new track. Set a mix to 0 to skip that effect.</p>`,
+    field("Reverb mix", numField("reverb_mix", "0.3", { step: "0.05", min: "0", max: "1" })),
+    field("Reverb space", select("reverb_type", REVERB_TYPES, "algorithmic")),
+    field("Delay mix", numField("delay_mix", "0", { step: "0.05", min: "0", max: "1" })),
+    field("Delay feedback", numField("delay_feedback", "0.35", { step: "0.05", min: "0", max: "0.95" })),
+    field("Lowpass (Hz, 0=off)", numField("lowpass", "0", { step: "100", min: "0", max: "20000" })),
+    field("Lowpass Q", numField("lowpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
+    field("Highpass (Hz, 0=off)", numField("highpass", "0", { step: "50", min: "0", max: "20000" })),
+    field("Highpass Q", numField("highpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
+    field("Distortion mix", numField("distortion_mix", "0", { step: "0.05", min: "0", max: "1" })),
+    field("Distortion drive", numField("distortion_drive", "3", { step: "0.5", min: "1", max: "20" })),
+    field("Chorus mix", numField("chorus_mix", "0", { step: "0.05", min: "0", max: "1" })),
+  ].join("");
+  return formPage(
+    "Apply Effects",
+    "Processes this audio clip through pytheory's effects onto a new audio track.",
+    fields,
+    "Apply",
+  );
+}
+
 export function renderSketchForm(
   options: Options,
   defaults: KeyDefaults,

@@ -36,6 +36,7 @@ export type AnalysisFunction =
   | "generate_sketch"
   | "audio_to_midi"
   | "audio_detect"
+  | "apply_effects"
   | "sample_pitch"
   | "scene_key";
 

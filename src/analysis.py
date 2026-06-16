@@ -1610,6 +1610,91 @@ def render_audio(payload_json):
     })
 
 
+# Effect parameters surfaced in the Apply Effects dialog, mapped to the
+# keys pytheory's effect chain (_apply_effects_with_params) understands.
+_FX_DEFAULTS = {
+    "reverb_mix": 0.0, "reverb_type": "algorithmic", "reverb_decay": 1.0,
+    "delay_mix": 0.0, "delay_feedback": 0.4, "delay_time": 0.375,
+    "lowpass": 0.0, "lowpass_q": 0.707,
+    "highpass": 0.0, "highpass_q": 0.707,
+    "distortion_mix": 0.0, "distortion_drive": 3.0,
+    "chorus_mix": 0.0,
+}
+
+
+def _effect_params(params):
+    fx = {}
+    for key, default in _FX_DEFAULTS.items():
+        if key == "reverb_type":
+            fx[key] = params.get(key, default)
+        else:
+            try:
+                fx[key] = float(params.get(key, default))
+            except (TypeError, ValueError):
+                fx[key] = default
+    return fx
+
+
+def _wav_to_float(data):
+    import numpy as np
+    if data.dtype == np.int16:
+        return data.astype(np.float32) / 32768.0
+    if data.dtype == np.int32:
+        return data.astype(np.float32) / 2147483648.0
+    if data.dtype == np.uint8:
+        return (data.astype(np.float32) - 128.0) / 128.0
+    return data.astype(np.float32)
+
+
+def apply_effects(payload_json):
+    """Apply pytheory's effect chain to a WAV in the virtual FS.
+
+    Reads the clip's audio (preserving stereo), runs each channel through
+    the chosen effects (``_apply_effects_with_params``), and returns
+    processed stereo PCM for the extension to drop onto a new audio track.
+    """
+    _patch_scipy_for_wasm()
+    import numpy as np
+    import scipy.io.wavfile
+    import scipy.signal
+    from pytheory.play import _apply_effects_with_params, SAMPLE_RATE
+
+    params = json.loads(payload_json)
+    try:
+        sr, raw = scipy.io.wavfile.read(params["path"])
+    except Exception as e:
+        return json.dumps({"error": f"Couldn't read the audio: {e}"})
+
+    data = _wav_to_float(raw)
+    if data.ndim == 1:
+        data = data[:, None]
+
+    # pytheory's effects are tuned for 44.1 kHz — resample if needed.
+    if sr != SAMPLE_RATE:
+        n_out = int(round(data.shape[0] * SAMPLE_RATE / sr))
+        data = scipy.signal.resample(data, n_out, axis=0).astype(np.float32)
+
+    fx = _effect_params(params)
+    # Give time-based effects room to ring out past the clip's end.
+    if fx["reverb_mix"] > 0 or fx["delay_mix"] > 0:
+        data = np.pad(data, ((0, int(SAMPLE_RATE * 2.0)), (0, 0)))
+    chans = [_apply_effects_with_params(data[:, c].copy(), fx)
+             for c in range(data.shape[1])]
+    n = max(len(c) for c in chans)
+    chans = [np.pad(c, (0, n - len(c))) for c in chans]
+    out = np.stack(chans, axis=1)
+    if out.shape[1] == 1:
+        out = np.repeat(out, 2, axis=1)
+
+    pcm = (np.clip(out, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+    return json.dumps({
+        "pcmBase64": base64.b64encode(pcm).decode(),
+        "sampleRate": SAMPLE_RATE,
+        "channels": int(out.shape[1]),
+        "name": f"{params.get('clipName', 'Audio')} (fx)",
+    })
+
+
 def conform_to_scale(payload_json):
     params = json.loads(payload_json)
     notes = params["notes"]
