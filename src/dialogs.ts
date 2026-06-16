@@ -68,6 +68,11 @@ const STYLE = `
     padding: 5px 8px; flex: 1; font-size: 13px;
   }
   input[type="checkbox"] { accent-color: var(--accent); }
+  input[type="range"] { flex: 1; accent-color: var(--accent); height: 4px; }
+  .sliderval {
+    width: 54px; text-align: right; color: var(--accent);
+    font-variant-numeric: tabular-nums; padding-left: 8px;
+  }
   .buttons {
     display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;
   }
@@ -749,15 +754,14 @@ export function renderRenderAudioForm(options: Options): string {
   );
 }
 
-function numField(name: string, value: string,
-                  opts: { step?: string; min?: string; max?: string } = {}): string {
-  const attrs = [
-    `type="number"`, `name="${escapeHtml(name)}"`, `value="${escapeHtml(value)}"`,
-    opts.step ? `step="${opts.step}"` : "",
-    opts.min !== undefined ? `min="${opts.min}"` : "",
-    opts.max !== undefined ? `max="${opts.max}"` : "",
-  ].filter(Boolean).join(" ");
-  return `<input ${attrs}>`;
+// A range slider with a live value readout beside it. The form submitter
+// reads the input's .value, so no extra wiring is needed.
+function slider(name: string, value: string,
+                opts: { min: string; max: string; step: string }): string {
+  return `<input type="range" name="${escapeHtml(name)}" value="${escapeHtml(value)}" `
+    + `min="${opts.min}" max="${opts.max}" step="${opts.step}" `
+    + `oninput="this.nextElementSibling.textContent = this.value">`
+    + `<span class="sliderval">${escapeHtml(value)}</span>`;
 }
 
 // pytheory's reverb spaces: the algorithmic plate plus 7 convolution IRs.
@@ -775,17 +779,17 @@ const REVERB_TYPES = [
 export function renderApplyEffectsForm(): string {
   const fields = [
     `<p class="dim">pytheory's effect chain, applied to this clip's audio onto a new track. Set a mix to 0 to skip that effect.</p>`,
-    field("Reverb mix", numField("reverb_mix", "0.3", { step: "0.05", min: "0", max: "1" })),
+    field("Reverb mix", slider("reverb_mix", "0.3", { step: "0.05", min: "0", max: "1" })),
     field("Reverb space", select("reverb_type", REVERB_TYPES, "algorithmic")),
-    field("Delay mix", numField("delay_mix", "0", { step: "0.05", min: "0", max: "1" })),
-    field("Delay feedback", numField("delay_feedback", "0.35", { step: "0.05", min: "0", max: "0.95" })),
-    field("Lowpass (Hz, 0=off)", numField("lowpass", "0", { step: "100", min: "0", max: "20000" })),
-    field("Lowpass Q", numField("lowpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
-    field("Highpass (Hz, 0=off)", numField("highpass", "0", { step: "50", min: "0", max: "20000" })),
-    field("Highpass Q", numField("highpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
-    field("Distortion mix", numField("distortion_mix", "0", { step: "0.05", min: "0", max: "1" })),
-    field("Distortion drive", numField("distortion_drive", "3", { step: "0.5", min: "1", max: "20" })),
-    field("Chorus mix", numField("chorus_mix", "0", { step: "0.05", min: "0", max: "1" })),
+    field("Delay mix", slider("delay_mix", "0", { step: "0.05", min: "0", max: "1" })),
+    field("Delay feedback", slider("delay_feedback", "0.35", { step: "0.05", min: "0", max: "0.95" })),
+    field("Lowpass (Hz, 0=off)", slider("lowpass", "0", { step: "100", min: "0", max: "20000" })),
+    field("Lowpass Q", slider("lowpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
+    field("Highpass (Hz, 0=off)", slider("highpass", "0", { step: "50", min: "0", max: "20000" })),
+    field("Highpass Q", slider("highpass_q", "0.7", { step: "0.1", min: "0.5", max: "10" })),
+    field("Distortion mix", slider("distortion_mix", "0", { step: "0.05", min: "0", max: "1" })),
+    field("Distortion drive", slider("distortion_drive", "3", { step: "0.5", min: "1", max: "20" })),
+    field("Chorus mix", slider("chorus_mix", "0", { step: "0.05", min: "0", max: "1" })),
   ].join("");
   return formPage(
     "Apply Effects",
