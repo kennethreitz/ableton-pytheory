@@ -14,6 +14,7 @@ export type AnalysisFunction =
   | "get_options"
   | "generate_progression"
   | "generate_scale"
+  | "generate_raga"
   | "generate_drums"
   | "conform_to_scale"
   | "harmonize"

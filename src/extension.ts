@@ -40,6 +40,7 @@ import {
   renderRenderAudioForm,
   renderSamplePitchDialog,
   renderScaleForm,
+  renderRagaForm,
   renderSceneKeyDialog,
   renderSketchForm,
   renderSubstitutionsDialog,
@@ -156,6 +157,7 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Render to Audio…", "pytheory.render-audio", renderAudio],
     ["ClipSlot", "Generate Progression…", "pytheory.generate-progression", generateProgression],
     ["ClipSlot", "Generate Scale…", "pytheory.generate-scale", generateScale],
+    ["ClipSlot", "Generate Raga…", "pytheory.generate-raga", generateRaga],
     ["ClipSlot", "Generate Drum Pattern…", "pytheory.generate-drums", generateDrums],
     ["ClipSlot", "Generate Melody…", "pytheory.generate-melody", generateMelody],
   ];
@@ -350,10 +352,12 @@ async function negativeHarmony(context: Context, handle: Handle) {
   )) as [Options, KeyResult];
 
   const tonic = detected.tonic ?? songKey(context, options).tonic;
-  const result = await analyze<{ notes: NoteDescription[]; changed: number }>(
-    "negative_harmony",
-    { notes, tonic },
-  );
+  const result = await analyze<{
+    notes: NoteDescription[];
+    changed: number;
+    axis?: string[];
+    bridgeChord?: string;
+  }>("negative_harmony", { notes, tonic });
   if (result.error) {
     await showDialog(context, renderErrorDialog(result.error), 420, 200);
     return;
@@ -362,14 +366,17 @@ async function negativeHarmony(context: Context, handle: Handle) {
   context.withinTransaction(() => {
     clip.notes = result.notes;
   });
+  const bridge = result.bridgeChord
+    ? ` The bridge chord between the two harmonic families is ${result.bridgeChord}.`
+    : "";
   await showDialog(
     context,
     renderMessageDialog(
       "Negative Harmony",
-      `Mirrored ${result.changed} ${result.changed === 1 ? "note" : "notes"} around the ${tonic} tonic–dominant axis. Run it again to undo musically.`,
+      `Mirrored ${result.changed} ${result.changed === 1 ? "note" : "notes"} around the ${tonic} tonic–dominant axis.${bridge} Run it again to undo musically.`,
     ),
     440,
-    200,
+    220,
   );
 }
 
@@ -1060,6 +1067,27 @@ async function generateScale(context: Context, handle: Handle) {
   if (!params) return;
 
   const generated = await analyze<GeneratedClip>("generate_scale", params);
+  if (generated.error) {
+    await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+    return;
+  }
+  await fillClip(context, slot, generated);
+}
+
+async function generateRaga(context: Context, handle: Handle) {
+  const slot = context.getObjectFromHandle(handle, ClipSlot);
+  if (!(await usableMidiSlot(context, slot))) return;
+
+  const options = await analyze<Options>("get_options", null);
+  const params = await showForm(
+    context,
+    renderRagaForm(options, songKey(context, options)),
+    440,
+    320,
+  );
+  if (!params) return;
+
+  const generated = await analyze<GeneratedClip>("generate_raga", params);
   if (generated.error) {
     await showDialog(context, renderErrorDialog(generated.error), 420, 200);
     return;

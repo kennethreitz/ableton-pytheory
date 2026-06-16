@@ -9,7 +9,7 @@ import base64
 import json
 import random
 
-from pytheory import Chord, Fretboard, Key, Tone, TonedScale, render_score
+from pytheory import Chord, Fretboard, Key, Raga, Tone, TonedScale, render_score
 from pytheory.rhythm import INSTRUMENTS, Pattern, Score, _RawDuration
 from pytheory.scales import PROGRESSIONS
 # Not the package-level Scale — pytheory/__init__ aliases that to TonedScale,
@@ -44,6 +44,7 @@ def get_options(_payload=None):
         "drumPatterns": Pattern.list_presets(),
         "drumFills": Pattern.list_fills(),
         "instruments": list(INSTRUMENTS),
+        "ragas": Raga.names(),
     })
 
 
@@ -256,6 +257,47 @@ def generate_scale(payload_json):
         "notes": notes,
         "length": len(pitches) * duration,
         "name": f"{tonic} {scale_name} scale",
+    })
+
+
+def generate_raga(payload_json):
+    """Lay out a Hindustani raga's aroha (then avaroha) as a MIDI clip.
+
+    Notes are the raga's swaras voiced from Sa = the chosen tonic. (MIDI
+    is 12-TET, so the shruti micro-tuning isn't represented here — the
+    clip is the raga's melodic skeleton; for the just-intoned audio use
+    ``Raga.play()``.)
+    """
+    params = json.loads(payload_json)
+    sa = params.get("tonic", "C")
+    octave = int(params.get("octave", 4))
+    duration = float(params.get("noteDuration", 0.5))
+    descend = params.get("descend", True)
+
+    try:
+        raga = Raga.get(params["raga"])
+    except KeyError:
+        return json.dumps({"error": f"Unknown raga: {params.get('raga')!r}"})
+
+    tones = raga.aroha_tones(f"{sa}{octave}")
+    if descend:
+        tones = tones + raga.avaroha_tones(f"{sa}{octave}")[1:]
+    pitches = [t.midi for t in tones]
+
+    notes = [
+        {
+            "pitch": pitch,
+            "startTime": i * duration,
+            "duration": duration,
+            "velocity": DEFAULT_VELOCITY,
+        }
+        for i, pitch in enumerate(pitches)
+        if 0 <= pitch <= 127
+    ]
+    return json.dumps({
+        "notes": notes,
+        "length": len(pitches) * duration,
+        "name": f"{sa} {raga.name} — {raga.thaat} thaat, {raga.time}",
     })
 
 
@@ -691,10 +733,15 @@ def analyze_melody(notes_json):
 
 
 def negative_harmony(payload_json):
-    """Mirror notes around the key's tonic–dominant axis."""
+    """Mirror notes around the key's tonic–dominant axis.
+
+    Routes each note through pytheory's negative-harmony code path
+    (``Chord.negative_harmony``) and reports the axis plus the bridge
+    chord — the negative dominant — from ``Key.negative_harmony``.
+    """
     params = json.loads(payload_json)
     notes = params["notes"]
-    tonic_pc = TONICS.index(params["tonic"])
+    tonic = params["tonic"]
 
     changed = 0
     mirrored = []
@@ -702,16 +749,23 @@ def negative_harmony(payload_json):
         new = dict(note)
         if not note.get("muted"):
             pitch = note["pitch"]
-            target_pc = (2 * tonic_pc + 7 - pitch) % 12
-            # Nearest octave placement to the original pitch (ties go down).
-            delta = (target_pc - pitch % 12 + 6) % 12 - 6
-            new_pitch = min(127, max(0, pitch + delta))
+            reflected = (Chord(tones=[Tone.from_midi(pitch)])
+                         .negative_harmony(tonic).tones[0])
+            new_pitch = min(127, max(0, reflected.midi))
             if new_pitch != pitch:
                 new["pitch"] = new_pitch
                 changed += 1
         mirrored.append(new)
 
-    return json.dumps({"notes": mirrored, "changed": changed})
+    info = Key(tonic, "major").negative_harmony()
+    bridge = info["negative_dominant"]
+    return json.dumps({
+        "notes": mirrored,
+        "changed": changed,
+        "axis": list(info["axis"]),
+        "axisNotes": list(info["axis_notes"]),
+        "bridgeChord": bridge.symbol or bridge.identify(),
+    })
 
 
 def generate_melody(payload_json):

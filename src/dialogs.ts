@@ -26,6 +26,7 @@ export interface Options {
   drumPatterns: string[];
   drumFills: string[];
   instruments: string[];
+  ragas: string[];
 }
 
 function escapeHtml(text: string): string {
@@ -306,6 +307,33 @@ export function renderScaleForm(options: Options, defaults: KeyDefaults): string
   return formPage(
     "Generate Scale",
     keySubtitle("Creates a MIDI clip running through the chosen scale.", defaults),
+    fields,
+    "Generate",
+  );
+}
+
+export function renderRagaForm(options: Options, defaults: KeyDefaults): string {
+  const fields = [
+    field("Sa (tonic)", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
+    field("Raga", select("raga", options.ragas.map((value) => ({ value })), options.ragas[0])),
+    field("Octave", select("octave", OCTAVES, "4")),
+    field(
+      "Note length",
+      select("noteDuration", [
+        { value: "0.25", label: "16th" },
+        { value: "0.5", label: "8th" },
+        { value: "1", label: "Quarter" },
+        { value: "2", label: "Half" },
+      ], "0.5"),
+    ),
+    field(
+      "Avaroha",
+      `<input type="checkbox" name="descend" checked> <span class="dim">descend after the ascent</span>`,
+    ),
+  ].join("");
+  return formPage(
+    "Generate Raga",
+    "Lays out a Hindustani raga's aroha (and avaroha) as a MIDI clip.",
     fields,
     "Generate",
   );
