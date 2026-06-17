@@ -37,6 +37,7 @@ import {
   renderMessageDialog,
   renderApplyEffectsForm,
   renderNotationPage,
+  renderReharmonizeForm,
   renderProgressionForm,
   renderRenderAudioForm,
   renderSamplePitchDialog,
@@ -145,6 +146,7 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Suggest Next Chord", "pytheory.suggest-next", suggestNextChord],
     ["MidiClip", "Chord Substitutions", "pytheory.substitutions", chordSubstitutions],
     ["MidiClip", "Negative Harmony", "pytheory.negative-harmony", negativeHarmony],
+    ["MidiClip", "Reharmonize…", "pytheory.reharmonize", reharmonizeClip],
     ["MidiClip", "Show Notation", "pytheory.notation", showNotation],
     ["MidiClip", "Generate Bassline…", "pytheory.bassline", generateBassline],
     ["MidiClip", "Guitar Tabs…", "pytheory.guitar-tabs", guitarTabs],
@@ -378,6 +380,61 @@ async function negativeHarmony(context: Context, handle: Handle) {
       `Mirrored ${result.changed} ${result.changed === 1 ? "note" : "notes"} around the ${tonic} tonic–dominant axis.${bridge} Run it again to undo musically.`,
     ),
     440,
+    220,
+  );
+}
+
+async function reharmonizeClip(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return;
+  }
+
+  const [options, detected] = (await context.ui.withinProgressDialog(
+    "Reading the chords…",
+    {},
+    () =>
+      Promise.all([
+        analyze<Options>("get_options", null),
+        analyze<KeyResult>("detect_key", notes),
+      ]),
+  )) as [Options, KeyResult];
+
+  const tonic = detected.tonic ?? songKey(context, options).tonic;
+  const params = await showForm(
+    context,
+    renderReharmonizeForm(options, tonic),
+    440,
+    240,
+  );
+  if (!params) return;
+
+  const result = await analyze<{
+    notes: NoteDescription[];
+    key: string;
+    technique: string;
+    before: number;
+    after: number;
+    symbols: string[];
+  }>("reharmonize", { notes, tonic: params.tonic, technique: params.technique });
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 440, 200);
+    return;
+  }
+
+  context.withinTransaction(() => {
+    clip.notes = result.notes;
+  });
+  const tech = String(params.technique).replace(/_/g, " ");
+  await showDialog(
+    context,
+    renderMessageDialog(
+      "Reharmonize",
+      `${tech} in ${result.key}: ${result.before} → ${result.after} chords.\n${result.symbols.join("  ")}`,
+    ),
+    460,
     220,
   );
 }

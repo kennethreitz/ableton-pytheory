@@ -777,6 +777,23 @@ const REVERB_TYPES = [
   { value: "canyon", label: "Canyon" },
 ];
 
+export function renderReharmonizeForm(options: Options, tonic: string): string {
+  const fields = [
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), tonic)),
+    field("Technique", select("technique", [
+      { value: "secondary_dominants", label: "Secondary dominants (insert)" },
+      { value: "tritone", label: "Tritone substitution" },
+      { value: "diatonic", label: "Diatonic swap" },
+    ], "secondary_dominants")),
+  ].join("");
+  return formPage(
+    "Reharmonize",
+    "Rework this chord clip's progression with a pytheory technique.",
+    fields,
+    "Reharmonize",
+  );
+}
+
 export function renderApplyEffectsForm(): string {
   const fields = [
     `<p class="dim">pytheory's effect chain, applied to this clip's audio onto a new track. Set a mix to 0 to skip that effect.</p>`,

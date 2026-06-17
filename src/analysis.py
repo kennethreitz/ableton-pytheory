@@ -811,6 +811,64 @@ def negative_harmony(payload_json):
     })
 
 
+def reharmonize(payload_json):
+    """Reharmonize a chord clip's progression with a chosen technique.
+
+    Clusters the clip into chords, detects the key, runs pytheory's
+    ``reharmonize_progression`` (``secondary_dominants`` inserts the
+    cycle-of-dominants, so the chord count can grow), and lays the new
+    progression evenly back across the clip's length.
+    """
+    from pytheory import reharmonize_progression
+
+    params = json.loads(payload_json)
+    notes = [n for n in params["notes"] if not n.get("muted")]
+    technique = params.get("technique", "secondary_dominants")
+    if not notes:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    clusters = [c for c in _cluster_chords(notes)
+                if len({n["pitch"] % 12 for n in c["notes"]}) >= 2]
+    if not clusters:
+        return json.dumps({"error": "No chords found to reharmonize — "
+                                    "this looks like a melody, not a progression."})
+
+    tonic = params.get("tonic")
+    if not tonic:
+        key = Key.detect(*_note_names(n["pitch"] for n in notes))
+        tonic = key.tonic_name if key else "C"
+
+    chords = [Chord([Tone.from_midi(p)
+                     for p in sorted({n["pitch"] for n in cl["notes"]})])
+              for cl in clusters]
+    try:
+        new_chords = reharmonize_progression(chords, tonic, technique=technique)
+    except Exception as e:
+        return json.dumps({"error": f"Reharmonize failed: {e}"})
+
+    total = max((n["startTime"] + n["duration"] for n in notes), default=4.0)
+    per = total / len(new_chords)
+    out = []
+    for i, ch in enumerate(new_chords):
+        for t in ch.tones:
+            if t.midi is None:
+                continue
+            out.append({
+                "pitch": min(127, max(0, t.midi)),
+                "startTime": i * per,
+                "duration": per,
+                "velocity": 90,
+            })
+    return json.dumps({
+        "notes": out,
+        "key": tonic,
+        "technique": technique,
+        "before": len(chords),
+        "after": len(new_chords),
+        "symbols": [c.symbol or c.identify() for c in new_chords],
+    })
+
+
 def generate_melody(payload_json):
     params = json.loads(payload_json)
     tonic = params["tonic"]

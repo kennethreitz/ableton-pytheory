@@ -27,6 +27,7 @@ export type AnalysisFunction =
   | "suggest_next_chord"
   | "chord_substitutions"
   | "negative_harmony"
+  | "reharmonize"
   | "generate_melody"
   | "generate_from_symbols"
   | "generate_bassline"
