@@ -769,6 +769,7 @@ const REVERB_TYPES = [
   { value: "algorithmic", label: "Algorithmic" },
   { value: "taj_mahal", label: "Taj Mahal (12s)" },
   { value: "cathedral", label: "Cathedral" },
+  { value: "hall", label: "Hall" },
   { value: "plate", label: "Plate" },
   { value: "spring", label: "Spring" },
   { value: "cave", label: "Cave" },
