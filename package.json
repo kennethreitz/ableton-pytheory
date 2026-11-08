@@ -10,7 +10,8 @@
     "build": "tsc --noEmit && tsx build.ts --production",
     "build:dev": "tsc --noEmit && tsx build.ts",
     "start": "npm run build:dev && extensions-cli run --storage-directory .dev/storage --temp-directory .dev/tmp",
-    "package": "npm run build && extensions-cli package -i dist/pyodide -i dist/pytheory -i dist/python-worker.mjs -i dist/abcjs.js"
+    "package": "npm run build && extensions-cli package -i dist/pyodide -i dist/pytheory -i dist/python-worker.mjs -i dist/abcjs.js",
+    "test": "npm run build && node tests/pyodide.mjs"
   },
   "dependencies": {
     "@ableton-extensions/sdk": "file:vendor/ableton-extensions-sdk-1.0.0-beta.0.tgz",
