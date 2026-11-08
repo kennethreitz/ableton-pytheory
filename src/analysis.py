@@ -16,7 +16,8 @@ from pytheory.scales import PROGRESSIONS
 # which lacks the detect/recommend static methods.
 from pytheory.scales import Scale
 
-TONICS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+TONICS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+          "Db", "Eb", "Gb", "Ab", "Bb"]
 DEFAULT_VELOCITY = 100
 
 
@@ -31,6 +32,31 @@ def _scale_names():
 
 def _chord_label(chord):
     return chord.symbol or chord.identify()
+
+
+def _chord_note_names(chord):
+    """Spell MIDI-derived notes by chord degree, retaining their registers.
+
+    MIDI has no enharmonic information. Use the identified symbol's spelling
+    (e.g. C augmented is C E G#, not C E Ab).
+    Unrecognized chords retain their original notes.
+    """
+    symbol = chord.symbol
+    if not symbol:
+        return [str(t) for t in chord.tones]
+    try:
+        spelled = Chord.from_symbol(symbol)
+    except (ValueError, KeyError):
+        return [str(t) for t in chord.tones]
+    names = {t.midi % 12: t.name for t in spelled.tones}
+    result = []
+    for tone in chord.tones:
+        name = names.get(tone.midi % 12, tone.name)
+        # Compare at a reference octave so B#/Cb retain the right register.
+        reference = Tone(name, octave=4, system="western").midi
+        octave = 4 + (tone.midi - reference) // 12
+        result.append(str(Tone(name, octave=octave, system="western")))
+    return result
 
 
 def get_options(_payload=None):
@@ -105,7 +131,7 @@ def detect_chords(notes_json):
                 pass
         chords.append({
             "start": cluster["start"],
-            "notes": [str(t) for t in tones],
+            "notes": _chord_note_names(chord),
             "name": chord.identify(),
             "symbol": _chord_label(chord),
             "numeral": numeral,
@@ -677,8 +703,7 @@ def chord_substitutions(notes_json):
             continue
 
         root_name, _, quality = identified.partition(" ")
-        root_pc = TONICS.index(_FLATS_REVERSED.get(root_name, root_name)) \
-            if root_name in TONICS or root_name in _FLATS_REVERSED else None
+        root_pc = _root_pc(root_name)
         if root_pc is None:
             continue
 
@@ -703,7 +728,6 @@ def chord_substitutions(notes_json):
     })
 
 
-_FLATS_REVERSED = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#"}
 
 
 def analyze_melody(notes_json):
@@ -1231,7 +1255,7 @@ def sample_pitch(payload_json):
         "midi": midi,
     }
     if set_tonic in TONICS:
-        delta = (TONICS.index(set_tonic) - midi) % 12
+        delta = (_root_pc(set_tonic) - midi) % 12
         if delta > 6:
             delta -= 12
         result["setTonic"] = set_tonic
@@ -1377,8 +1401,10 @@ def smooth_voicings(payload_json):
 
 def _root_pc(name):
     """Pitch class for a note name like 'C#', 'Db', or 'A'."""
-    name = _FLATS_REVERSED.get(name, name)
-    return TONICS.index(name) if name in TONICS else None
+    try:
+        return Tone.from_string(f"{name}4", system="western").midi % 12
+    except (ValueError, KeyError):
+        return None
 
 
 def _stacked_pitches(chord, octave):

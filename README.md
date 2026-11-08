@@ -133,7 +133,9 @@ Right-click a **sample** (or a Simpler device):
 The real pytheory Python package runs *inside* the extension via
 [Pyodide](https://pyodide.org) (CPython compiled to WebAssembly) — no system
 Python required, nothing to install, fully offline. The build stages the
-Pyodide runtime, a numpy wheel, and the pytheory sources into `dist/`.
+Pyodide runtime, a numpy wheel, and the pytheory **0.58.0** sources into `dist/`.
+The required source version is pinned in `pytheory-version.json`; builds reject
+a mismatched checkout. No pytheory wheel or system Python is used at runtime.
 
 Pyodide needs dynamic `import()`, which the Extension Host's vm sandbox
 doesn't provide, so the interpreter runs in a worker thread and the extension
@@ -161,7 +163,7 @@ Prerequisites:
   `ableton-extensions-sdk-<version>.tgz` and
   `ableton-extensions-cli-<version>.tgz` from the SDK zip into `vendor/`.
 - The [pytheory](https://github.com/kennethreitz/pytheory) repo checked out
-  as a sibling directory (or set `PYTHEORY_PATH` to its location)
+  at tag `v0.58.0` as a sibling directory (or set `PYTHEORY_PATH` to its location)
 
 Then:
 
@@ -174,6 +176,9 @@ Then:
 
 Logs (including `console.log` and uncaught exceptions) land in
 `~/Library/Preferences/Ableton/Live x.x.x/ExtensionHost.txt`.
+
+Run `npm test` to build and exercise the staged sources in Pyodide, including
+chord spelling, symbol generation, and the new interval APIs.
 
 ## Packaging
 

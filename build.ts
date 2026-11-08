@@ -70,16 +70,24 @@ for (const pkg of ["numpy", "scipy"]) {
   fs.copyFileSync(cachedWheel, path.join(pyodideDest, wheel));
 }
 
-// Ship the pytheory Python sources; the extension writes them into Pyodide's
-// virtual filesystem at startup.
+// Bundle the required pytheory release, never silently ship an older sibling.
+const requiredPytheory = JSON.parse(
+  fs.readFileSync("pytheory-version.json", "utf8"),
+).version;
 const pytheorySrc = path.join(
   process.env.PYTHEORY_PATH ?? "../pytheory",
   "pytheory",
 );
-if (!fs.existsSync(pytheorySrc)) {
+const initPath = path.join(pytheorySrc, "__init__.py");
+if (!fs.existsSync(initPath)) {
   throw new Error(
-    `pytheory sources not found at ${pytheorySrc} — set PYTHEORY_PATH to the pytheory repo root.`,
+    `pytheory ${requiredPytheory} sources not found at ${pytheorySrc} — set PYTHEORY_PATH to the pytheory repo root.`,
   );
+}
+const sourceVersion = fs.readFileSync(initPath, "utf8")
+  .match(/^__version__\s*=\s*["']([^"']+)["']/m)?.[1];
+if (sourceVersion !== requiredPytheory) {
+  throw new Error(`Expected pytheory ${requiredPytheory}, found ${sourceVersion} at ${pytheorySrc}`);
 }
 const pytheoryDest = path.join("dist", "pytheory");
 fs.rmSync(pytheoryDest, { recursive: true, force: true });
