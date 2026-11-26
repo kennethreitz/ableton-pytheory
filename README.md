@@ -133,7 +133,7 @@ Right-click a **sample** (or a Simpler device):
 The real pytheory Python package runs *inside* the extension via
 [Pyodide](https://pyodide.org) (CPython compiled to WebAssembly) — no system
 Python required, nothing to install, fully offline. The build stages the
-Pyodide runtime, a numpy wheel, and the pytheory **0.58.0** sources into `dist/`.
+Pyodide runtime, a numpy wheel, and the pytheory **0.59.0** sources into `dist/`.
 The required source version is pinned in `pytheory-version.json`; builds reject
 a mismatched checkout. No pytheory wheel or system Python is used at runtime.
 
@@ -163,7 +163,7 @@ Prerequisites:
   `ableton-extensions-sdk-<version>.tgz` and
   `ableton-extensions-cli-<version>.tgz` from the SDK zip into `vendor/`.
 - The [pytheory](https://github.com/kennethreitz/pytheory) repo checked out
-  at tag `v0.58.0` as a sibling directory (or set `PYTHEORY_PATH` to its location)
+  at tag `v0.59.0` as a sibling directory (or set `PYTHEORY_PATH` to its location)
 
 Then:
 
