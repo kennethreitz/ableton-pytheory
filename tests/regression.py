@@ -35,6 +35,12 @@ class ReleaseRegression(unittest.TestCase):
         self.assertIsNone(_root_pc("invalid"))
         self.assertIn("Eb", json.loads(get_options())["tonics"])
 
+    def test_scale_intervals(self):
+        intervals = json.loads(get_options())["scaleIntervals"]
+        self.assertEqual(intervals["major"], [0, 2, 4, 5, 7, 9, 11])
+        self.assertEqual(intervals["dorian"], [0, 2, 3, 5, 7, 9, 10])
+        self.assertEqual(intervals["harmonic minor"], [0, 2, 3, 5, 7, 8, 11])
+
     def test_intervals(self):
         self.assertEqual(Tone.from_string("C4").transpose("m3").name, "Eb")
         self.assertEqual(Tone.from_string("Eb4").add(3, prefer_flats=None).name, "Gb")

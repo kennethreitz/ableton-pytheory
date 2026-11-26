@@ -27,6 +27,7 @@ export interface Options {
   drumFills: string[];
   instruments: string[];
   ragas: string[];
+  scaleIntervals: Record<string, number[]>;
 }
 
 function escapeHtml(text: string): string {
@@ -231,12 +232,16 @@ export interface KeyDefaults {
   tonic: string;
   scale: string;
   source: "set" | "none";
+  /** Live's own name for the Set's scale, when it differs from pytheory's. */
+  liveScale?: string;
 }
 
 function keySubtitle(base: string, defaults: KeyDefaults): string {
-  return defaults.source === "set"
-    ? `${base} Key prefilled from the Set: ${defaults.tonic} ${defaults.scale}.`
-    : base;
+  if (defaults.source !== "set") return base;
+  const live = defaults.liveScale && defaults.liveScale.toLowerCase() !== defaults.scale
+    ? ` (Live: ${defaults.liveScale})`
+    : "";
+  return `${base} Key prefilled from the Set: ${defaults.tonic} ${defaults.scale}${live}.`;
 }
 
 export function renderProgressionForm(

@@ -20,6 +20,7 @@ import {
   type NoteDescription,
 } from "@ableton-extensions/sdk";
 
+import { matchScale, spellTonic } from "./keys.js";
 import { analyze, getPython } from "./python.js";
 import {
   renderArpeggiateForm,
@@ -74,15 +75,17 @@ const TONICS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 function songKey(context: Context, options: Options): KeyDefaults {
   try {
     const song = context.application.song;
-    const tonic = TONICS[song.rootNote];
-    if (!tonic) return { tonic: "C", scale: "major", source: "none" };
-    const liveScale = song.scaleName.toLowerCase();
-    const scale = options.scales.includes(liveScale)
-      ? liveScale
-      : liveScale.includes("minor")
-        ? "minor"
-        : "major";
-    return { tonic, scale, source: "set" };
+    const root = song.rootNote;
+    if (!(root >= 0 && root < 12)) return { tonic: "C", scale: "major", source: "none" };
+    let intervals: number[] | undefined;
+    try {
+      intervals = song.scaleIntervals;
+    } catch {
+      intervals = undefined; // older hosts: fall back to the scale's name
+    }
+    const scale = matchScale(song.scaleName, intervals, options);
+    const tonic = spellTonic(root, scale, options);
+    return { tonic, scale, source: "set", liveScale: song.scaleName };
   } catch (error) {
     console.error("pytheory: couldn't read the Set's key:", error);
     return { tonic: "C", scale: "major", source: "none" };

@@ -71,6 +71,11 @@ def get_options(_payload=None):
         "drumFills": Pattern.list_fills(),
         "instruments": list(INSTRUMENTS),
         "ragas": Raga.names(),
+        # Semitone offsets of every scale, so the extension can match Live's
+        # current scale (Song.scaleIntervals) to a pytheory scale exactly.
+        "scaleIntervals": {
+            name: _scale_degrees("C", name) for name in _scale_names()
+        },
     })
 
 
