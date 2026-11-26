@@ -15,8 +15,14 @@ export interface ChordsResult {
     name: string | null;
     symbol: string | null;
     numeral: string | null;
+    function?: string | null;
+    secondary?: string | null;
+    borrowed?: boolean;
+    borrowedFrom?: string;
+    scales?: string[];
   }[];
   cadences: { bar: number; type: string; motion: string }[];
+  progression?: string;
 }
 
 export interface Options {
@@ -190,6 +196,12 @@ export function renderKeyDialog(clipName: string, result: KeyResult): string {
   );
 }
 
+function chordRole(c: ChordsResult["chords"][number]): string {
+  if (c.secondary) return `${c.secondary} (applied dominant)`;
+  if (c.borrowed) return c.borrowedFrom ? `borrowed from ${c.borrowedFrom}` : "borrowed";
+  return c.function ?? "";
+}
+
 export function renderChordsDialog(
   clipName: string,
   result: ChordsResult,
@@ -200,6 +212,8 @@ export function renderChordsDialog(
         <td class="dim">${(1 + c.start / 4).toFixed(2)}</td>
         <td>${c.symbol ? escapeHtml(c.symbol) : "?"}</td>
         <td>${c.numeral ? escapeHtml(c.numeral) : "—"}</td>
+        <td class="dim">${escapeHtml(chordRole(c))}</td>
+        <td class="dim">${escapeHtml((c.scales ?? []).slice(0, 2).join(", "))}</td>
         <td class="dim">${c.notes.map(escapeHtml).join(" ")}</td>
       </tr>`,
     )
@@ -217,14 +231,20 @@ export function renderChordsDialog(
          )
          .join("")}</table>`
     : "";
-  return infoPage(
-    "Chord Detection",
-    `${clipName} — ${result.chords.length} chords${keyNote}`,
-    `<table>
-       <tr><th>Bar</th><th>Chord</th><th>Numeral</th><th>Notes</th></tr>
-       ${rows}
-     </table>
-     ${cadences}`,
+  const title = "Chord Detection";
+  return page(
+    title,
+    `<h1>${escapeHtml(title)}</h1>
+     <p class="subtitle">${escapeHtml(`${clipName} — ${result.chords.length} chords${keyNote}`)}</p>
+     <div class="result">
+       <table>
+         <tr><th>Bar</th><th>Chord</th><th>Numeral</th><th>Role</th><th>Play over it</th><th>Notes</th></tr>
+         ${rows}
+       </table>
+       ${cadences}
+     </div>`,
+    `<button class="secondary" onclick="send('name')" title="Rename the clip to its chord progression">Name clip by chords</button>
+     <button class="primary" onclick="cancel()">Close</button>`,
   );
 }
 
@@ -818,7 +838,7 @@ export interface TabsResult {
   instrument: string;
   key: string | null;
   scaleDiagram: string | null;
-  chords: { symbol: string; tab: string | null; bars: number[] }[];
+  chords: { symbol: string; tab: string | null; grips?: string[]; bars: number[] }[];
 }
 
 export function renderTabsForm(): string {
@@ -845,8 +865,9 @@ export function renderTabsForm(): string {
 export function renderTabsDialog(clipName: string, result: TabsResult): string {
   const cards = result.chords
     .map((c) => {
-      const body = c.tab
-        ? `<pre class="tab">${escapeHtml(c.tab)}</pre>`
+      const grips = c.grips?.length ? c.grips : c.tab ? [c.tab] : [];
+      const body = grips.length
+        ? `<div class="grips">${grips.map((g) => `<pre class="tab">${escapeHtml(g)}</pre>`).join("")}</div>`
         : `<p class="dim">no chart</p>`;
       return `<div class="card">
         <p class="chord-name">${escapeHtml(c.symbol)}</p>
@@ -871,6 +892,7 @@ export function renderTabsDialog(clipName: string, result: TabsResult): string {
        }
        .chord-name { color: var(--accent); font-size: 15px; margin: 0 0 6px; }
        .tab { font-family: monospace; font-size: 12px; line-height: 1.5; margin: 0; }
+       .grips { display: flex; gap: 14px; }
        .diagram { overflow-x: auto; margin-bottom: 14px; }
        .card .dim { margin: 6px 0 0; font-size: 11px; }
      </style>

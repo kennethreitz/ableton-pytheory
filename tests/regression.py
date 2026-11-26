@@ -72,7 +72,7 @@ def _by_onset(notes):
 
 
 class Voicings(unittest.TestCase):
-    PROGRESSION = [[60, 64, 67], [57, 60, 64], [53, 57, 60], [55, 59, 62]]
+    PROGRESSION = ((60, 64, 67), (57, 60, 64), (53, 57, 60), (55, 59, 62))
 
     def call(self, fn, **payload):
         result = json.loads(fn(json.dumps(payload)))
@@ -182,7 +182,7 @@ class Progressions(unittest.TestCase):
 
 
 class Groove(unittest.TestCase):
-    CHORD = [{"pitch": p, "startTime": 0, "duration": 2, "velocity": 100} for p in (60, 64, 67)]
+    CHORD = tuple({"pitch": p, "startTime": 0, "duration": 2, "velocity": 100} for p in (60, 64, 67))
 
     def call(self, fn, **payload):
         result = json.loads(fn(json.dumps(payload)))
@@ -271,7 +271,7 @@ class Euclid(unittest.TestCase):
         self.assertEqual(text(4, 16, 2), "..x...x...x...x.")  # offbeat hats
         self.assertEqual(text(0, 4), "....")
         self.assertEqual(text(4, 4), "xxxx")
-        for h in range(0, 17):
+        for h in range(17):
             self.assertEqual(sum(euclid(h, 16)), h)
 
     def test_drum_lanes(self):
@@ -358,8 +358,43 @@ class FollowTheChords(unittest.TestCase):
         self.assertEqual([n["pitch"] for n in octave["notes"][:2]], [36, 48])
 
 
+class Harmony(unittest.TestCase):
+    """Detect Chords explains function, applied dominants and borrowing."""
+
+    @staticmethod
+    def _clip(symbol_pitches):
+        notes = []
+        for bar, pitches in enumerate(symbol_pitches):
+            for p in pitches:
+                notes.append({"pitch": p, "startTime": bar * 4.0, "duration": 4.0})
+        return notes
+
+    def test_roles(self):
+        notes = self._clip([[60, 64, 67], [62, 66, 69, 72], [55, 59, 62, 65],
+                            [56, 60, 63], [58, 62, 65], [60, 64, 67]])
+        result = json.loads(detect_chords(json.dumps(notes)))
+        self.assertEqual(result["key"], "C major")
+        chords = result["chords"]
+        self.assertEqual([c["symbol"] for c in chords], ["C", "D7", "G7", "Ab", "Bb", "C"])
+        self.assertEqual(chords[0]["function"], "tonic")
+        self.assertEqual(chords[1]["secondary"], "V7/V")
+        self.assertEqual(chords[2]["function"], "dominant")
+        self.assertTrue(chords[3]["borrowed"])
+        self.assertEqual(chords[3]["numeral"], "bVI")
+        self.assertEqual(chords[4]["numeral"], "bVII")
+        self.assertIn("ionian", chords[0]["scales"])
+        self.assertEqual(result["progression"], "C D7 G7 Ab Bb C")
+
+    def test_tab_grips(self):
+        notes = self._clip([[57, 60, 64], [53, 57, 60]])
+        result = json.loads(guitar_tabs(json.dumps({"notes": notes, "instrument": "guitar"})))
+        for chord in result["chords"]:
+            self.assertGreaterEqual(len(chord["grips"]), 2)
+            self.assertEqual(chord["tab"], chord["grips"][0])
+
+
 suite = unittest.TestSuite()
-for case in (ReleaseRegression, Voicings, Progressions, Groove, Euclid, FollowTheChords):
+for case in (ReleaseRegression, Voicings, Progressions, Groove, Euclid, FollowTheChords, Harmony):
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 if not result.wasSuccessful():

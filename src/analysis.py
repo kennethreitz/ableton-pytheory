@@ -11,7 +11,17 @@ import json
 import random
 import re
 
-from pytheory import Chord, Fretboard, Key, Raga, Tone, TonedScale, render_score
+from pytheory import (
+    Chord,
+    Fretboard,
+    Key,
+    Raga,
+    Tone,
+    TonedScale,
+    chord_scales,
+    detect_secondary_dominant,
+    render_score,
+)
 from pytheory.rhythm import INSTRUMENTS, Pattern, Score, _RawDuration
 from pytheory.scales import PROGRESSIONS
 # Not the package-level Scale — pytheory/__init__ aliases that to TonedScale,
@@ -143,6 +153,15 @@ def detect_chords(notes_json):
             "symbol": _chord_label(chord),
             "numeral": numeral,
         })
+        role = _chord_role(chord, key)
+        chromatic = role.pop("numeral", None)
+        if chromatic:
+            chords[-1]["numeral"] = chromatic
+            if chromatic.startswith("b"):
+                # A flat-side chord reads as Ab, not G#: respell it.
+                chords[-1]["symbol"] = _flatten(chords[-1]["symbol"])
+                chords[-1]["notes"] = [_flatten(n) for n in chords[-1]["notes"]]
+        chords[-1].update(role)
 
     if not chords:
         return json.dumps({
@@ -152,7 +171,94 @@ def detect_chords(notes_json):
         "chords": chords,
         "key": str(key) if key else None,
         "cadences": _cadences(chords),
+        "progression": " ".join(c["symbol"] or "?" for c in chords),
     })
+
+
+def _flatten(name):
+    """C#m7 -> Dbm7, G#4 -> Ab4 (only the leading note name changes)."""
+    if not name:
+        return name
+    match = re.match(r"^[A-G]#", name)
+    if not match:
+        return name
+    return _FLATS.get(match.group(0), match.group(0)) + name[2:]
+
+
+_CHROMATIC_NUMERALS = ["I", "bII", "II", "bIII", "III", "IV", "#IV", "V", "bVI",
+                       "VI", "bVII", "VII"]
+
+
+def _chromatic_numeral(chord, tonic):
+    """bVI, bvii°, bVII7...: a numeral from the root's distance to the tonic."""
+    root = _chord_root_pc(chord)
+    tonic_pc = _root_pc(tonic)
+    if root is None or tonic_pc is None:
+        return None
+    numeral = _CHROMATIC_NUMERALS[(root - tonic_pc) % 12]
+    quality = chord.quality or ""
+    if quality.startswith(("minor", "diminished", "half")):
+        numeral = numeral[0] + numeral[1:].lower() if numeral[0] in "b#" else numeral.lower()
+    if quality.startswith("diminished"):
+        numeral += "°"
+    elif quality.startswith("half"):
+        numeral += "ø7"
+    if "7th" in quality and not quality.startswith("half"):
+        numeral += "maj7" if quality.startswith("major") else "7"
+    return numeral
+
+
+_FUNCTION_NAMES = {"tonic": "tonic", "subdominant": "pre-dominant", "dominant": "dominant"}
+
+
+def _chord_role(chord, key):
+    """What a chord is doing in the key: function, applied dominant,
+    modal borrowing, and the scales that fit over it."""
+    role = {"function": None, "secondary": None, "borrowed": False, "scales": []}
+    if not key:
+        return role
+    mode = key.mode if key.mode in ("major", "minor") else "major"
+    try:
+        role["scales"] = chord_scales(chord, key=key.tonic_name, mode=mode)[:3]
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        role["secondary"] = detect_secondary_dominant(chord, key.tonic_name, mode)
+    except (KeyError, ValueError, TypeError):
+        pass
+    try:
+        scale_pcs = set(_scale_degrees(key.tonic_name, key.mode))
+    except (KeyError, ValueError):
+        scale_pcs = set()
+    pcs = {t.midi % 12 for t in chord.tones}
+    diatonic = pcs <= scale_pcs
+    if not diatonic and not role["secondary"]:
+        try:
+            parallel = key.parallel
+            if parallel is not None:
+                role["borrowed"] = pcs <= set(
+                    _scale_degrees(parallel.tonic_name, parallel.mode))
+                if role["borrowed"]:
+                    role["borrowedFrom"] = str(parallel)
+        except (KeyError, ValueError, AttributeError):
+            pass
+        # MIDI spells Ab as G#, which would read #V; name chromatic chords
+        # by their distance from the tonic instead (bVI, bVII, bII...).
+        role["numeral"] = _chromatic_numeral(chord, key.tonic_name)
+    if diatonic:
+        root = _chord_root_pc(chord)
+        try:
+            for fn, members in key.chords_by_function().items():
+                if root in {_chord_root_pc(c) for c in members}:
+                    role["function"] = _FUNCTION_NAMES.get(fn, fn)
+                    break
+        except (KeyError, ValueError):
+            pass
+    elif role["secondary"]:
+        role["function"] = "applied dominant"
+    elif role["borrowed"]:
+        role["function"] = "borrowed"
+    return role
 
 
 def _cadences(chords):
@@ -526,17 +632,23 @@ def guitar_tabs(payload_json):
 
         root, _, quality = identified.partition(" ")
         suffix = _CHART_QUALITIES.get(quality)
-        tab = None
+        grips = []
         if suffix is not None:
             chart_name = _FLATS.get(root, root) + suffix
             try:
-                tab = fretboard.chord(chart_name).tab()
-                # Drop the chord-name header — the dialog renders its own.
-                if "\n" in tab:
-                    tab = tab.split("\n", 1)[1]
-            except (KeyError, ValueError):
+                # Several playable grips (open, then movable shapes up the
+                # neck), ranked by pytheory's fingering search.
+                for fingering in fretboard.chord(chart_name, multiple=True, limit=3):
+                    tab = fingering.tab()
+                    # Drop the chord-name header — the dialog renders its own.
+                    if "\n" in tab:
+                        tab = tab.split("\n", 1)[1]
+                    if tab not in grips:
+                        grips.append(tab)
+            except (KeyError, ValueError, TypeError):
                 pass
-        found[symbol] = {"symbol": symbol, "tab": tab, "bars": [bar]}
+        found[symbol] = {"symbol": symbol, "tab": grips[0] if grips else None,
+                         "grips": grips, "bars": [bar]}
 
     key = Key.detect(*_note_names(n["pitch"] for n in notes))
 

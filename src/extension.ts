@@ -239,10 +239,16 @@ async function detectChords(context: Context, handle: Handle) {
     {},
     () => analyze<ChordsResult>("detect_chords", notes),
   )) as ChordsResult & { error?: string };
-  const html = result.error
-    ? renderErrorDialog(result.error)
-    : renderChordsDialog(clipName, result);
-  await showDialog(context, html, 520, 420);
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 520, 420);
+    return;
+  }
+  const choice = await showDialog(context, renderChordsDialog(clipName, result), 720, 460);
+  if (choice === "name" && result.progression) {
+    context.withinTransaction(() => {
+      clip.name = result.progression!.slice(0, 120);
+    });
+  }
 }
 
 async function conformToScale(context: Context, handle: Handle) {
@@ -1297,7 +1303,7 @@ async function guitarTabs(context: Context, handle: Handle) {
     await showDialog(context, renderErrorDialog(result.error), 420, 200);
     return;
   }
-  await showDialog(context, renderTabsDialog(clipName, result), 560, 460);
+  await showDialog(context, renderTabsDialog(clipName, result), 680, 480);
 }
 
 async function harmonize(context: Context, handle: Handle) {
