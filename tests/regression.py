@@ -181,8 +181,86 @@ class Progressions(unittest.TestCase):
         self.assertEqual(last[0] % 12, 4)  # slash bass: E under C
 
 
+class Groove(unittest.TestCase):
+    CHORD = [{"pitch": p, "startTime": 0, "duration": 2, "velocity": 100} for p in (60, 64, 67)]
+
+    def call(self, fn, **payload):
+        result = json.loads(fn(json.dumps(payload)))
+        self.assertNotIn("error", result, result.get("error"))
+        return result
+
+    def pitches(self, result):
+        return [n["pitch"] for n in sorted(result["notes"], key=lambda n: n["startTime"])]
+
+    def test_arp_legacy_defaults(self):
+        result = self.call(arpeggiate, notes=self.CHORD, style="up", rate=0.25)
+        self.assertEqual(self.pitches(result)[:4], [60, 64, 67, 60])
+        self.assertEqual(len(result["notes"]), 8)
+
+    def test_arp_patterns(self):
+        expect = {
+            "down": [67, 64, 60, 67],
+            "updown": [60, 64, 67, 64],
+            "downup": [67, 64, 60, 64],
+            "converge": [60, 67, 64, 60],
+            "thumb": [60, 64, 60, 67],
+            "pinky": [60, 67, 64, 67],
+        }
+        for style, first in expect.items():
+            with self.subTest(style=style):
+                result = self.call(arpeggiate, notes=self.CHORD, style=style, rate=0.25)
+                self.assertEqual(self.pitches(result)[:4], first)
+        two = self.call(arpeggiate, notes=self.CHORD, style="up", rate=0.25, octaves=2)
+        self.assertEqual(self.pitches(two)[:6], [60, 64, 67, 72, 76, 79])
+        chord = self.call(arpeggiate, notes=self.CHORD, style="chord", rate=0.5)
+        self.assertEqual(len(chord["notes"]), 12)
+        rand = self.call(arpeggiate, notes=self.CHORD, style="random", rate=0.25, seed=7)
+        self.assertEqual(sorted(set(self.pitches(rand))), [60, 64, 67])
+        self.assertIn("error", json.loads(arpeggiate(json.dumps(
+            {"notes": self.CHORD, "style": "sideways"}))))
+
+    def test_arp_swing_gate_accent(self):
+        result = self.call(arpeggiate, notes=self.CHORD, style="up", rate=0.25,
+                           swing=1, gate=0.5, accent=True)
+        starts = sorted({n["startTime"] for n in result["notes"]})
+        self.assertAlmostEqual(starts[1], 0.25 + 0.25 / 3, places=5)
+        self.assertEqual(starts[2], 0.5)
+        self.assertTrue(all(n["duration"] <= 0.125 + 1e-9 for n in result["notes"]))
+        on_beat = [n["velocity"] for n in result["notes"] if n["startTime"] in (0, 1)]
+        self.assertTrue(all(v == 112 for v in on_beat))
+
+    def test_strum(self):
+        result = self.call(strum, notes=self.CHORD, direction="down", speed=25, bpm=120)
+        by_pitch = {n["pitch"]: n for n in result["notes"]}
+        self.assertEqual(by_pitch[60]["startTime"], 0)
+        self.assertAlmostEqual(by_pitch[64]["startTime"], 0.05)
+        self.assertAlmostEqual(by_pitch[67]["startTime"] + by_pitch[67]["duration"], 2)
+        up = self.call(strum, notes=self.CHORD, direction="up", speed=25, bpm=120)
+        self.assertEqual(min(up["notes"], key=lambda n: n["startTime"])["pitch"], 67)
+        mono = [{"pitch": 60, "startTime": 0, "duration": 1}]
+        self.assertIn("error", json.loads(strum(json.dumps({"notes": mono}))))
+
+    def test_humanize(self):
+        loose = [{"pitch": 60, "startTime": i * 0.5 + 0.03, "duration": 0.25, "velocity": 100}
+                 for i in range(8)]
+        tight = self.call(humanize, notes=loose, grid=0.5, strength=1, bpm=120)
+        self.assertEqual([n["startTime"] for n in tight["notes"]], [i * 0.5 for i in range(8)])
+        swung = self.call(humanize, notes=loose, grid=0.5, strength=1, swing=1, bpm=120)
+        self.assertAlmostEqual(swung["notes"][1]["startTime"], 0.5 + 0.5 / 3, places=5)
+        drift = self.call(humanize, notes=loose, timing=10, velocity=12, liveVelocity=20,
+                          bpm=120, seed=3)
+        for before, after in zip(loose, drift["notes"]):
+            self.assertLessEqual(abs(after["startTime"] - before["startTime"]), 0.02 + 1e-9)
+            self.assertLessEqual(abs(after["velocity"] - 100), 12)
+            self.assertEqual(after["duration"], 0.25)
+            self.assertEqual(after["velocityDeviation"], 20)
+        again = self.call(humanize, notes=loose, timing=10, velocity=12, bpm=120, seed=3)
+        self.assertEqual([n["startTime"] for n in again["notes"]],
+                         [n["startTime"] for n in drift["notes"]])
+
+
 suite = unittest.TestSuite()
-for case in (ReleaseRegression, Voicings, Progressions):
+for case in (ReleaseRegression, Voicings, Progressions, Groove):
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 if not result.wasSuccessful():

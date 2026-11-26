@@ -41,7 +41,9 @@ export type AnalysisFunction =
   | "sample_pitch"
   | "scene_key"
   | "voice_chords"
-  | "chordify";
+  | "chordify"
+  | "strum"
+  | "humanize";
 
 interface WorkerReply {
   id?: number;

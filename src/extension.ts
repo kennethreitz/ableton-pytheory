@@ -52,6 +52,8 @@ import {
   renderTabsDialog,
   renderTabsForm,
   renderTransposeForm,
+  renderHumanizeForm,
+  renderStrumForm,
   renderVoiceChordsForm,
   type AudioDetectResult,
   type ChordsResult,
@@ -157,6 +159,8 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Guitar Tabs…", "pytheory.guitar-tabs", guitarTabs],
     ["MidiClip", "Harmonize…", "pytheory.harmonize", harmonize],
     ["MidiClip", "Arpeggiate…", "pytheory.arpeggiate", arpeggiate],
+    ["MidiClip", "Strum…", "pytheory.strum", strumClip],
+    ["MidiClip", "Humanize…", "pytheory.humanize", humanizeClip],
     ["MidiClip", "Conform to Scale…", "pytheory.conform", conformToScale],
     ["MidiClip", "Transpose to Key…", "pytheory.transpose", transposeToKey],
     ["MidiClip", "Smooth Voicings", "pytheory.smooth-voicings", smoothVoicings],
@@ -1328,7 +1332,7 @@ async function arpeggiate(context: Context, handle: Handle) {
     return;
   }
 
-  const params = await showForm(context, renderArpeggiateForm(), 420, 260);
+  const params = await showForm(context, renderArpeggiateForm(), 460, 400);
   if (!params) return;
 
   const result = await analyze<{ notes: NoteDescription[]; arpeggiated: number }>(
@@ -1525,5 +1529,53 @@ async function chordify(context: Context, handle: Handle) {
     result.notes,
     "Chordify",
     `Built ${result.chords} ${result.chords === 1 ? "chord" : "chords"} in ${params.tonic} ${params.scale}.\n${summarize(result.symbols)}`,
+  );
+}
+
+async function strumClip(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = await clipNotes(context, clip);
+  if (!notes) return;
+  const params = await showForm(context, renderStrumForm(), 460, 280);
+  if (!params) return;
+  const result = await analyze<{ notes: NoteDescription[]; strummed: number }>("strum", {
+    notes,
+    ...params,
+    bpm: context.application.song.tempo,
+  });
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+  await writeNotes(
+    context,
+    clip,
+    result.notes,
+    "Strum",
+    `Strummed ${result.strummed} ${result.strummed === 1 ? "chord" : "chords"}. ⌘Z puts them back.`,
+  );
+}
+
+async function humanizeClip(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = await clipNotes(context, clip);
+  if (!notes) return;
+  const params = await showForm(context, renderHumanizeForm(), 480, 400);
+  if (!params) return;
+  const result = await analyze<{ notes: NoteDescription[]; moved: number }>("humanize", {
+    notes,
+    ...params,
+    bpm: context.application.song.tempo,
+  });
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+  await writeNotes(
+    context,
+    clip,
+    result.notes,
+    "Humanize",
+    `Moved ${result.moved} ${result.moved === 1 ? "note" : "notes"} off the grid. ⌘Z restores the original.`,
   );
 }

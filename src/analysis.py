@@ -664,11 +664,78 @@ def harmonize(payload_json):
     return json.dumps({"notes": notes + added, "added": len(added)})
 
 
+ARP_STYLES = ("up", "down", "updown", "downup", "converge", "diverge",
+              "pinky", "thumb", "random", "chord")
+
+
+def _arp_sequence(pitches, style, octaves, rng):
+    """One cycle of an arpeggio over sorted pitches, across `octaves`."""
+    ladder = [p + 12 * o for o in range(octaves) for p in pitches]
+    ladder = [p for p in ladder if 0 <= p <= 127] or list(pitches)
+    if style == "down":
+        return list(reversed(ladder))
+    if style == "updown":
+        return ladder + ladder[-2:0:-1]
+    if style == "downup":
+        down = list(reversed(ladder))
+        return down + down[-2:0:-1]
+    if style == "converge":
+        # Outside in: lowest, highest, next lowest, next highest...
+        out, lo, hi = [], 0, len(ladder) - 1
+        while lo <= hi:
+            out.append(ladder[lo])
+            if lo != hi:
+                out.append(ladder[hi])
+            lo, hi = lo + 1, hi - 1
+        return out
+    if style == "diverge":
+        # Inside out: the converge order, reversed.
+        return list(reversed(_arp_sequence(pitches, "converge", octaves, rng)))
+    if style == "pinky":
+        # The top note is a pedal between every other step.
+        top, rest = ladder[-1], ladder[:-1]
+        return [x for p in rest for x in (p, top)] or [top]
+    if style == "thumb":
+        # The bottom note is a pedal between every other step.
+        bottom, rest = ladder[0], ladder[1:]
+        return [x for p in rest for x in (bottom, p)] or [bottom]
+    if style == "random":
+        shuffled = list(ladder)
+        rng.shuffle(shuffled)
+        return shuffled
+    return ladder  # "up"
+
+
+def _swung(t, grid, amount):
+    """Delay every second grid step by `amount` (1.0 = full triplet swing)."""
+    if amount <= 0 or grid <= 0:
+        return t
+    step = t / grid
+    if abs(step - round(step)) < 1e-6 and round(step) % 2 == 1:
+        return t + amount * grid / 3
+    return t
+
+
 def arpeggiate(payload_json):
+    """Replace block chords with arpeggios.
+
+    rate in beats (0.333/0.1667 for triplets), octaves 1–4, gate as a
+    fraction of the step, swing 0–1 on odd steps, accent on each beat.
+    "chord" style retriggers the whole chord on the grid (a gated pad).
+    """
     params = json.loads(payload_json)
     notes = [n for n in params["notes"] if not n.get("muted")]
     rate = float(params.get("rate", 0.25))
     style = params.get("style", "up")
+    octaves = max(1, min(4, int(params.get("octaves", 1))))
+    gate = max(0.05, min(1.0, float(params.get("gate", 1.0))))
+    swing = max(0.0, min(1.0, float(params.get("swing", 0))))
+    accent = params.get("accent") in (True, "yes", "on")
+    if style not in ARP_STYLES:
+        return json.dumps({"error": f"Unknown arpeggio style: {style}"})
+    if rate <= 0:
+        return json.dumps({"error": "The arpeggio rate must be positive."})
+    rng = _rng(params)
 
     result = []
     arpeggiated = 0
@@ -678,13 +745,7 @@ def arpeggiate(payload_json):
             result.extend(cluster["notes"])
             continue
 
-        if style == "down":
-            sequence = list(reversed(pitches))
-        elif style == "updown":
-            sequence = pitches + pitches[-2:0:-1]
-        else:
-            sequence = pitches
-
+        sequence = _arp_sequence(pitches, style, octaves, rng)
         arpeggiated += 1
         start = cluster["start"]
         end = max(n["startTime"] + n["duration"] for n in cluster["notes"])
@@ -694,12 +755,22 @@ def arpeggiate(payload_json):
         i = 0
         t = start
         while t < end - 1e-9:
-            result.append({
-                "pitch": sequence[i % len(sequence)],
-                "startTime": t,
-                "duration": min(rate, end - t),
-                "velocity": velocity,
-            })
+            onset = _swung(t, rate, swing)
+            length = min(rate * gate, end - onset)
+            if length > 1e-6:
+                on_beat = abs(t - round(t)) < 1e-6
+                hit_velocity = (min(127, velocity + 12) if on_beat else max(1, velocity - 8)) \
+                    if accent else velocity
+                if style == "random" and i and i % len(sequence) == 0:
+                    rng.shuffle(sequence)
+                chord_hit = pitches if style == "chord" else [sequence[i % len(sequence)]]
+                for pitch in chord_hit:
+                    result.append({
+                        "pitch": pitch,
+                        "startTime": round(onset, 6),
+                        "duration": round(length, 6),
+                        "velocity": hit_velocity,
+                    })
             i += 1
             t = start + i * rate
 
@@ -708,6 +779,101 @@ def arpeggiate(payload_json):
             "error": "No chords to arpeggiate — the clip looks monophonic."
         })
     return json.dumps({"notes": result, "arpeggiated": arpeggiated})
+
+
+def strum(payload_json):
+    """Roll each chord's notes like a strummed guitar or a harp.
+
+    direction: down (low to high, like a downstroke), up, or alternate
+    (down on chords that land on a beat, up on the ones in between, the
+    way a strumming hand moves). speed: milliseconds between strings,
+    converted to beats at the Set's tempo. Each chord still ends where it
+    did, and later strings ring a touch softer.
+    """
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    direction = params.get("direction", "down")
+    if direction not in ("down", "up", "alternate"):
+        return json.dumps({"error": f"Unknown strum direction: {direction}"})
+    bpm = float(params.get("bpm", 120)) or 120
+    delta = float(params.get("speed", 25)) / 1000 * bpm / 60  # ms to beats
+    taper = float(params.get("taper", 0.04))
+
+    sounding = [n for n in notes if not n.get("muted")]
+    clusters = [c for c in _cluster_chords(sounding)
+                if len({n["pitch"] for n in c["notes"]}) >= 2]
+    if not clusters:
+        return json.dumps({"error": "No chords to strum — the clip looks monophonic."})
+
+    strummed_ids = set()
+    result = []
+    for cluster in clusters:
+        ordered = sorted(cluster["notes"], key=lambda n: n["pitch"])
+        if direction == "up" or (
+            direction == "alternate" and abs(cluster["start"] - round(cluster["start"])) > 1e-6
+        ):
+            ordered.reverse()
+        for i, note in enumerate(ordered):
+            strummed_ids.add(id(note))
+            new = dict(note)
+            end = note["startTime"] + note["duration"]
+            new["startTime"] = round(cluster["start"] + i * delta, 6)
+            new["duration"] = round(max(0.01, end - new["startTime"]), 6)
+            new["velocity"] = max(1, round(note.get("velocity", 100) * (1 - taper * i)))
+            result.append(new)
+    result.extend(n for n in notes if id(n) not in strummed_ids)
+    return json.dumps({"notes": result, "strummed": len(clusters)})
+
+
+def humanize(payload_json):
+    """Loosen a clip: groove quantize, swing, timing and velocity drift.
+
+    Order of work: pull toward the grid (quantize at `strength`), swing
+    the off-steps, nudge every onset by up to `timing` ms, and vary
+    velocity by up to `velocity`. `liveVelocity` writes Live's own
+    velocity deviation instead, so every loop pass plays differently.
+    """
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    bpm = float(params.get("bpm", 120)) or 120
+    grid = float(params.get("grid") or 0)
+    strength = max(0.0, min(1.0, float(params.get("strength", 0))))
+    swing = max(0.0, min(1.0, float(params.get("swing", 0))))
+    timing_beats = float(params.get("timing", 0)) / 1000 * bpm / 60
+    velocity_range = int(params.get("velocity", 0))
+    live_velocity = int(params.get("liveVelocity", 0))
+    rng = _rng(params)
+
+    sounding = [n for n in notes if not n.get("muted")]
+    if not sounding:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+
+    result = []
+    moved = 0
+    for note in notes:
+        new = dict(note)
+        if note.get("muted"):
+            result.append(new)
+            continue
+        t = note["startTime"]
+        if grid > 0:
+            target = round(t / grid) * grid
+            t += (target - t) * strength
+            t = _swung(target, grid, swing) + (t - target) if swing else t
+        if timing_beats > 0:
+            # Gaussian drift, clipped to the range: most notes move a little.
+            t += max(-timing_beats, min(timing_beats, rng.gauss(0, timing_beats / 2)))
+        t = max(0.0, t)
+        if velocity_range:
+            v = note.get("velocity", 100) + rng.randint(-velocity_range, velocity_range)
+            new["velocity"] = max(1, min(127, v))
+        if live_velocity:
+            new["velocityDeviation"] = max(-127, min(127, live_velocity))
+        if abs(t - note["startTime"]) > 1e-9:
+            moved += 1
+        new["startTime"] = round(t, 6)  # the whole note moves; length stays
+        result.append(new)
+    return json.dumps({"notes": result, "moved": moved})
 
 
 def _transitions():

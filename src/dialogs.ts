@@ -587,28 +587,111 @@ export function renderHarmonizeForm(
 export function renderArpeggiateForm(): string {
   const fields = [
     field(
-      "Style",
+      "Pattern",
       select("style", [
         { value: "up", label: "Up" },
         { value: "down", label: "Down" },
         { value: "updown", label: "Up & down" },
+        { value: "downup", label: "Down & up" },
+        { value: "converge", label: "Converge (outside in)" },
+        { value: "diverge", label: "Diverge (inside out)" },
+        { value: "pinky", label: "Pinky (top note pedal)" },
+        { value: "thumb", label: "Thumb (bottom note pedal)" },
+        { value: "random", label: "Random" },
+        { value: "chord", label: "Chord repeat (gated pad)" },
       ], "up"),
     ),
     field(
       "Rate",
       select("rate", [
-        { value: "0.125", label: "32nd" },
-        { value: "0.25", label: "16th" },
-        { value: "0.5", label: "8th" },
-        { value: "1", label: "Quarter" },
+        { value: "0.125", label: "1/32" },
+        { value: "0.1666667", label: "1/16 triplet" },
+        { value: "0.25", label: "1/16" },
+        { value: "0.3333333", label: "1/8 triplet" },
+        { value: "0.5", label: "1/8" },
+        { value: "1", label: "1/4" },
       ], "0.25"),
+    ),
+    field(
+      "Octaves",
+      select("octaves", [
+        { value: "1" }, { value: "2" }, { value: "3" }, { value: "4" },
+      ], "1"),
+    ),
+    field("Gate (length)", slider("gate", "1", { min: "0.1", max: "1", step: "0.05" })),
+    field("Swing", slider("swing", "0", { min: "0", max: "1", step: "0.05" })),
+    field(
+      "Accent",
+      `<input type="checkbox" name="accent"> <span class="dim">louder on the beat, softer between</span>`,
     ),
   ].join("");
   return formPage(
     "Arpeggiate",
-    "Replaces each block chord with an arpeggio over its duration.",
+    "Replaces each block chord with an arpeggio over its duration. Swing 1 is a full triplet shuffle.",
     fields,
     "Arpeggiate",
+  );
+}
+
+export function renderStrumForm(): string {
+  const fields = [
+    field(
+      "Direction",
+      select("direction", [
+        { value: "down", label: "Down (low to high)" },
+        { value: "up", label: "Up (high to low)" },
+        { value: "alternate", label: "Alternate (down on the beat, up between)" },
+      ], "down"),
+    ),
+    field(
+      "Speed",
+      select("speed", [
+        { value: "8", label: "Tight (8 ms per string)" },
+        { value: "18", label: "Guitar (18 ms)" },
+        { value: "35", label: "Relaxed (35 ms)" },
+        { value: "70", label: "Harp (70 ms)" },
+        { value: "140", label: "Slow roll (140 ms)" },
+      ], "18"),
+    ),
+    field(
+      "Later strings",
+      select("taper", [
+        { value: "0", label: "Same velocity" },
+        { value: "0.04", label: "A touch softer" },
+        { value: "0.1", label: "Noticeably softer" },
+      ], "0.04"),
+    ),
+  ].join("");
+  return formPage(
+    "Strum",
+    "Rolls each chord's notes like a strum. Chords still end where they did; one undo step.",
+    fields,
+    "Strum",
+  );
+}
+
+export function renderHumanizeForm(): string {
+  const fields = [
+    field(
+      "Groove grid",
+      select("grid", [
+        { value: "", label: "Off (leave timing on the grid it's on)" },
+        { value: "0.25", label: "1/16" },
+        { value: "0.5", label: "1/8" },
+        { value: "0.125", label: "1/32" },
+      ], ""),
+    ),
+    field("Quantize strength", slider("strength", "0.5", { min: "0", max: "1", step: "0.05" })),
+    field("Swing", slider("swing", "0", { min: "0", max: "1", step: "0.05" })),
+    field("Timing drift (ms)", slider("timing", "8", { min: "0", max: "40", step: "1" })),
+    field("Velocity drift", slider("velocity", "10", { min: "0", max: "40", step: "1" })),
+    field("Live velocity deviation", slider("liveVelocity", "0", { min: "0", max: "40", step: "1" })),
+  ].join("");
+  return formPage(
+    "Humanize",
+    "Groove-quantize, swing, then loosen timing and velocity. Live velocity deviation varies every loop pass instead of once.",
+    fields,
+    "Humanize",
   );
 }
 
