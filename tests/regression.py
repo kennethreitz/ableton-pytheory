@@ -259,8 +259,47 @@ class Groove(unittest.TestCase):
                          [n["startTime"] for n in drift["notes"]])
 
 
+class Euclid(unittest.TestCase):
+    def test_bjorklund(self):
+        def text(h, s, r=0):
+            return "".join("x" if v else "." for v in euclid(h, s, r))
+        self.assertEqual(text(3, 8), "x..x..x.")       # tresillo
+        self.assertEqual(text(5, 8), "x.xx.xx.")       # cinquillo
+        self.assertEqual(text(4, 16), "x...x...x...x...")
+        self.assertEqual(text(7, 16), "x..x.x.x..x.x.x.")
+        self.assertEqual(text(5, 12), "x..x.x..x.x.")
+        self.assertEqual(text(4, 16, 2), "..x...x...x...x.")  # offbeat hats
+        self.assertEqual(text(0, 4), "....")
+        self.assertEqual(text(4, 4), "xxxx")
+        for h in range(0, 17):
+            self.assertEqual(sum(euclid(h, 16)), h)
+
+    def test_drum_lanes(self):
+        result = json.loads(generate_euclidean(json.dumps({
+            "mode": "drums", "bars": 2, "lanes": [
+                {"pitch": 36, "hits": 4, "steps": 16},
+                {"pitch": 39, "hits": 2, "steps": 16, "rotation": 4},
+                {"pitch": 42, "hits": 0, "steps": 16},
+            ]})))
+        self.assertEqual(result["length"], 8)
+        claps = sorted(n["startTime"] for n in result["notes"] if n["pitch"] == 39)
+        self.assertEqual(claps, [1.0, 3.0, 5.0, 7.0])
+        self.assertEqual(len([n for n in result["notes"] if n["pitch"] == 36]), 8)
+        self.assertIn("error", json.loads(generate_euclidean(json.dumps({
+            "mode": "drums", "lanes": [{"pitch": 36, "hits": 9, "steps": 8}]}))))
+        self.assertIn("error", json.loads(generate_euclidean(json.dumps({
+            "mode": "drums", "lanes": [{"pitch": 36, "hits": 0, "steps": 8}]}))))
+
+    def test_pitched(self):
+        result = json.loads(generate_euclidean(json.dumps({
+            "mode": "pitched", "tonic": "A", "scale": "minor", "hits": 3, "steps": 8,
+            "pitches": "triad", "octave": 2})))
+        self.assertEqual([n["pitch"] for n in result["notes"]][:4], [45, 48, 52, 48])
+        self.assertEqual([n["startTime"] for n in result["notes"]][:3], [0.0, 0.75, 1.5])
+
+
 suite = unittest.TestSuite()
-for case in (ReleaseRegression, Voicings, Progressions, Groove):
+for case in (ReleaseRegression, Voicings, Progressions, Groove, Euclid):
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 if not result.wasSuccessful():

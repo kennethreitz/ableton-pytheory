@@ -31,6 +31,8 @@ import {
   renderChordsDialog,
   renderConformForm,
   renderDrumsForm,
+  renderEuclidForm,
+  EUCLID_LANES,
   renderErrorDialog,
   renderHarmonizeForm,
   renderKeyDialog,
@@ -174,6 +176,7 @@ export function activate(activation: ActivationContext) {
     ["ClipSlot", "Generate Raga…", "pytheory.generate-raga", generateRaga],
     ["ClipSlot", "Generate Drum Pattern…", "pytheory.generate-drums", generateDrums],
     ["ClipSlot", "Generate Melody…", "pytheory.generate-melody", generateMelody],
+    ["ClipSlot", "Generate Euclidean Rhythm…", "pytheory.generate-euclid", generateEuclid],
   ];
   const sceneCommands: [label: string, id: string,
     run: (context: Context, handle: Handle) => Promise<void>][] = [
@@ -1578,4 +1581,31 @@ async function humanizeClip(context: Context, handle: Handle) {
     "Humanize",
     `Moved ${result.moved} ${result.moved === 1 ? "note" : "notes"} off the grid. ⌘Z restores the original.`,
   );
+}
+
+async function generateEuclid(context: Context, handle: Handle) {
+  const slot = context.getObjectFromHandle(handle, ClipSlot);
+  if (!(await usableMidiSlot(context, slot))) return;
+
+  const options = await analyze<Options>("get_options", null);
+  const params = await showForm(
+    context,
+    renderEuclidForm(options, songKey(context, options)),
+    520,
+    520,
+  );
+  if (!params) return;
+
+  const lanes = EUCLID_LANES.map((lane, i) => ({
+    pitch: lane.pitch,
+    hits: Number(params[`lane${i}_hits`] ?? 0),
+    steps: Number(params[`lane${i}_steps`] ?? 16),
+    rotation: Number(params[`lane${i}_rotation`] ?? 0),
+  }));
+  const generated = await analyze<GeneratedClip>("generate_euclidean", { ...params, lanes });
+  if (generated.error) {
+    await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+    return;
+  }
+  await fillClip(context, slot, generated);
 }

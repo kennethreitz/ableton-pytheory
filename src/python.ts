@@ -43,7 +43,8 @@ export type AnalysisFunction =
   | "voice_chords"
   | "chordify"
   | "strum"
-  | "humanize";
+  | "humanize"
+  | "generate_euclidean";
 
 interface WorkerReply {
   id?: number;

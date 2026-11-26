@@ -553,6 +553,107 @@ export function renderDrumsForm(options: Options): string {
   );
 }
 
+// Euclidean drum lanes, General MIDI pitches (Drum Rack's default layout).
+export const EUCLID_LANES = [
+  { label: "Kick", pitch: 36 },
+  { label: "Clap / snare", pitch: 39 },
+  { label: "Closed hat", pitch: 42 },
+  { label: "Open hat / perc", pitch: 46 },
+];
+
+// [hits, steps, rotation] per lane.
+const EUCLID_PRESETS: { id: string; label: string; lanes: number[][] }[] = [
+  { id: "floor", label: "Four on the floor", lanes: [[4, 16, 0], [2, 16, 4], [4, 16, 2], [0, 16, 0]] },
+  { id: "dembow", label: "Dembow-ish (tresillo kick)", lanes: [[3, 8, 0], [2, 8, 3], [8, 16, 0], [0, 16, 0]] },
+  { id: "afro", label: "Afro house", lanes: [[4, 16, 0], [3, 16, 4], [7, 16, 0], [5, 16, 3]] },
+  { id: "samba", label: "Samba hats E(7,16)", lanes: [[4, 16, 0], [2, 16, 4], [7, 16, 0], [0, 16, 0]] },
+  { id: "minimal", label: "Minimal techno", lanes: [[4, 16, 0], [1, 16, 12], [5, 16, 2], [3, 8, 1]] },
+  { id: "broken", label: "Broken beat", lanes: [[3, 16, 0], [2, 16, 4], [9, 16, 0], [5, 12, 2]] },
+];
+
+function numberOptions(from: number, to: number) {
+  return Array.from({ length: to - from + 1 }, (_, i) => ({ value: String(from + i) }));
+}
+
+export function renderEuclidForm(options: Options, defaults: KeyDefaults): string {
+  const preset = EUCLID_PRESETS[0];
+  const laneRows = EUCLID_LANES.map((lane, i) => {
+    const [hits, steps, rotation] = preset.lanes[i];
+    return `<div class="field"><label>${escapeHtml(lane.label)}</label>
+      ${select(`lane${i}_hits`, numberOptions(0, 16), String(hits), 'title="hits"')}
+      <span class="dim" style="padding: 0 6px">in</span>
+      ${select(`lane${i}_steps`, numberOptions(1, 32), String(steps), 'title="steps"')}
+      <span class="dim" style="padding: 0 6px">rotate</span>
+      ${select(`lane${i}_rotation`, numberOptions(0, 15), String(rotation), 'title="rotation"')}
+    </div>`;
+  }).join("");
+  const presets = JSON.stringify(Object.fromEntries(EUCLID_PRESETS.map((p) => [p.id, p.lanes])));
+  const fields = [
+    `<script>
+      const EUCLID = ${presets};
+      function applyEuclid(id) {
+        const lanes = EUCLID[id];
+        if (!lanes) return;
+        lanes.forEach((lane, i) => {
+          ["hits", "steps", "rotation"].forEach((key, j) => {
+            document.querySelector('[name="lane' + i + '_' + key + '"]').value = String(lane[j]);
+          });
+        });
+      }
+      function showMode(mode) {
+        document.getElementById('drum-rows').style.display = mode === 'drums' ? '' : 'none';
+        document.getElementById('pitched-rows').style.display = mode === 'pitched' ? '' : 'none';
+      }
+    </script>`,
+    field("Make", select("mode", [
+      { value: "drums", label: "Drum lanes (kick, clap, hats, perc)" },
+      { value: "pitched", label: "A pitched line in key (bass, pluck, arp)" },
+    ], "drums", `onchange="showMode(this.value)"`)),
+    `<div id="drum-rows">
+      ${field("Preset", `<select onchange="applyEuclid(this.value)">${EUCLID_PRESETS.map(
+        (p) => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.label)}</option>`,
+      ).join("")}</select>`)}
+      ${laneRows}
+    </div>`,
+    `<div id="pitched-rows" style="display: none">
+      ${field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic))}
+      ${field("Scale", select("scale", options.scales.map((value) => ({ value })), defaults.scale))}
+      <div class="field"><label>Rhythm</label>
+        ${select("hits", numberOptions(1, 16), "5")}
+        <span class="dim" style="padding: 0 6px">in</span>
+        ${select("steps", numberOptions(1, 32), "8")}
+        <span class="dim" style="padding: 0 6px">rotate</span>
+        ${select("rotation", numberOptions(0, 15), "0")}
+      </div>
+      ${field("Notes", select("pitches", [
+        { value: "triad", label: "Triad (1-3-5-3)" },
+        { value: "root", label: "Root only" },
+        { value: "fifths", label: "Root, fifth, octave" },
+        { value: "scale-up", label: "Climb the scale" },
+        { value: "scale-random", label: "Random scale tones" },
+      ], "triad"))}
+      ${field("Octave", select("octave", [
+        { value: "1", label: "1 (sub)" }, { value: "2", label: "2 (bass)" },
+        { value: "3", label: "3" }, { value: "4", label: "4 (middle)" }, { value: "5", label: "5" },
+      ], "2"))}
+    </div>`,
+    field("Step size", select("rate", [
+      { value: "0.25", label: "1/16" },
+      { value: "0.5", label: "1/8" },
+      { value: "0.125", label: "1/32" },
+      { value: "0.1666667", label: "1/16 triplet" },
+    ], "0.25")),
+    field("Bars", select("bars", [{ value: "1" }, { value: "2" }, { value: "4" }, { value: "8" }], "1")),
+    field("Gate (length)", slider("gate", "0.5", { min: "0.1", max: "1", step: "0.05" })),
+  ].join("");
+  return formPage(
+    "Generate Euclidean Rhythm",
+    keySubtitle("Hits spread as evenly as possible across the steps (Bjorklund). E(3,8) is the tresillo.", defaults),
+    fields,
+    "Generate",
+  );
+}
+
 export function renderHarmonizeForm(
   options: Options,
   detected: KeyResult,

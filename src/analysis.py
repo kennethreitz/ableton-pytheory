@@ -2568,3 +2568,125 @@ def chordify(payload_json):
         return json.dumps({"error": f"Unknown mode: {mode}"})
 
     return json.dumps({"notes": result, "chords": len(clusters), "symbols": symbols})
+
+
+# ---------------------------------------------------------------------------
+# Euclidean rhythms
+# ---------------------------------------------------------------------------
+
+def euclid(hits, steps, rotation=0):
+    """Bjorklund's algorithm: `hits` onsets spread as evenly as possible.
+
+    E(3, 8) is the tresillo x..x..x., E(5, 8) the cinquillo x.xx.xx.
+    `rotation` shifts the pattern later by that many steps.
+    """
+    if steps <= 0:
+        return []
+    hits = max(0, min(hits, steps))
+    if hits == 0:
+        return [0] * steps
+    groups = [[1] for _ in range(hits)] + [[0] for _ in range(steps - hits)]
+    while True:
+        remainder = len(groups) - hits
+        if remainder <= 1 or hits <= 1:
+            break
+        pairs = min(hits, remainder)
+        merged = [groups[i] + groups[-(i + 1)] for i in range(pairs)]
+        rest = groups[pairs:len(groups) - pairs]
+        groups = merged + rest
+        hits = pairs
+    pattern = [x for group in groups for x in group]
+    rotation %= steps
+    return pattern[-rotation:] + pattern[:-rotation] if rotation else pattern
+
+
+_EUCLID_PITCHES = ("root", "triad", "scale-up", "scale-random", "fifths")
+
+
+def generate_euclidean(payload_json):
+    """A clip of Euclidean rhythms: drum lanes, or one pitched line in key.
+
+    lanes: [{pitch, hits, steps, rotation}] (drum mode).
+    Pitched mode walks the key with `pitches`: root, triad, scale-up,
+    scale-random, or fifths. Each lane's first step is accented.
+    """
+    params = json.loads(payload_json)
+    mode = params.get("mode", "drums")
+    rate = float(params.get("rate", 0.25))
+    bars = max(1, int(params.get("bars", 1)))
+    gate = max(0.05, min(1.0, float(params.get("gate", 0.5))))
+    rng = _rng(params)
+    if rate <= 0:
+        return json.dumps({"error": "The step size must be positive."})
+    total = bars * 4.0
+
+    notes = []
+
+    def lane_hits(hits, steps, rotation):
+        if not 1 <= steps <= 64:
+            raise ValueError("Steps must be between 1 and 64.")
+        if not 0 <= hits <= steps:
+            raise ValueError(f"A lane can't have {hits} hits in {steps} steps.")
+        pattern = euclid(hits, steps, rotation)
+        positions = []
+        step = 0
+        while step * rate < total - 1e-9:
+            if pattern[step % steps]:
+                positions.append((step * rate, step % steps == 0))
+            step += 1
+        return positions
+
+    try:
+        if mode == "drums":
+            lanes = [lane for lane in params.get("lanes", []) if int(lane.get("hits", 0)) > 0]
+            if not lanes:
+                return json.dumps({"error": "Every lane is empty — give one some hits."})
+            for lane in lanes:
+                for t, downbeat in lane_hits(int(lane["hits"]), int(lane["steps"]),
+                                             int(lane.get("rotation", 0))):
+                    notes.append({
+                        "pitch": _clamp_pitch(int(lane["pitch"])),
+                        "startTime": round(t, 6),
+                        "duration": round(rate * gate, 6),
+                        "velocity": 112 if downbeat else 96,
+                    })
+            name = "euclid " + " ".join(
+                f"E({lane['hits']},{lane['steps']})" for lane in lanes)
+        elif mode == "pitched":
+            style = params.get("pitches", "triad")
+            if style not in _EUCLID_PITCHES:
+                return json.dumps({"error": f"Unknown pitch pattern: {style}"})
+            hits, steps = int(params.get("hits", 5)), int(params.get("steps", 16))
+            degrees = _scale_degrees(params["tonic"], params["scale"])
+            octave = int(params.get("octave", 3))
+            ladder = [12 * (octave + 1) + (pc - degrees[0]) % 12 + degrees[0]
+                      for pc in degrees]
+            ladder = sorted(ladder) + [p + 12 for p in sorted(ladder)]
+            walks = {
+                "root": [0],
+                "triad": [0, 2, 4, 2],
+                "scale-up": list(range(len(degrees))),
+                "fifths": [0, 4, 7, 4],
+            }
+            positions = lane_hits(hits, steps, int(params.get("rotation", 0)))
+            for i, (t, downbeat) in enumerate(positions):
+                if style == "scale-random":
+                    index = rng.randrange(len(degrees) + 1)
+                else:
+                    walk = walks[style]
+                    index = walk[i % len(walk)]
+                notes.append({
+                    "pitch": _clamp_pitch(ladder[min(index, len(ladder) - 1)]),
+                    "startTime": round(t, 6),
+                    "duration": round(rate * gate, 6),
+                    "velocity": 110 if downbeat else 94,
+                })
+            name = f"{params['tonic']} {params['scale']} E({hits},{steps}) {style}"
+        else:
+            return json.dumps({"error": f"Unknown mode: {mode}"})
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": str(e)})
+
+    if not notes:
+        return json.dumps({"error": "That pattern has no hits."})
+    return json.dumps({"notes": notes, "length": total, "name": name})
