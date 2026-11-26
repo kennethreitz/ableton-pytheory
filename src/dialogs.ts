@@ -97,7 +97,7 @@ const SCRIPT = `
   function cancel() { send("null"); }
   function submitForm() {
     const data = {};
-    document.querySelectorAll("[name]").forEach((el) => {
+    document.querySelectorAll("[name]:not([data-skip])").forEach((el) => {
       data[el.name] = el.type === "checkbox" ? el.checked : el.value;
     });
     send(JSON.stringify(data));
@@ -244,6 +244,101 @@ function keySubtitle(base: string, defaults: KeyDefaults): string {
   return `${base} Key prefilled from the Set: ${defaults.tonic} ${defaults.scale}${live}.`;
 }
 
+// Ready-made starting points for Generate Progression: each sets the mode,
+// numerals, and the voicing/rhythm fields. The key stays as prefilled.
+interface ProgressionRecipe {
+  id: string;
+  label: string;
+  mode: string;
+  numerals: string;
+  size: string;
+  voicing: string;
+  rhythm: string;
+  bass: boolean;
+  beatsPerChord: string;
+}
+
+export const PROGRESSION_RECIPES: ProgressionRecipe[] = [
+  { id: "deep-house", label: "Deep house: minor 9ths, offbeat stabs", mode: "minor",
+    numerals: "i7 iv7 v7 i7", size: "ninth", voicing: "drop2", rhythm: "offbeat",
+    bass: true, beatsPerChord: "4" },
+  { id: "trance", label: "Trance anthem: vi IV I V, 16th gate", mode: "major",
+    numerals: "vi IV I V", size: "as-written", voicing: "open", rhythm: "sixteenths",
+    bass: true, beatsPerChord: "4" },
+  { id: "synthwave", label: "Synthwave: i VI III VII, pumping 8ths", mode: "minor",
+    numerals: "i VI III VII", size: "as-written", voicing: "spread", rhythm: "eighths",
+    bass: true, beatsPerChord: "4" },
+  { id: "garage", label: "UK garage: minor 7ths, 3-3-2 stabs", mode: "minor",
+    numerals: "i7 bVImaj7 iv7 v7", size: "as-written", voicing: "drop2", rhythm: "dotted",
+    bass: false, beatsPerChord: "4" },
+  { id: "lofi", label: "Lo-fi: ii7 V7 Imaj7 vi7, lazy sevenths", mode: "major",
+    numerals: "ii7 V7 Imaj7 vi7", size: "as-written", voicing: "drop2", rhythm: "sustain",
+    bass: false, beatsPerChord: "4" },
+  { id: "neo-soul", label: "Neo-soul: backdoor iv7 to bVII7", mode: "major",
+    numerals: "Imaj7 IVmaj7 iv7 bVII7", size: "as-written", voicing: "drop2", rhythm: "push",
+    bass: true, beatsPerChord: "4" },
+  { id: "techno", label: "Dark techno: phrygian i bII, quarter stabs", mode: "phrygian",
+    numerals: "i bII i bVII", size: "triad", voicing: "close", rhythm: "quarters",
+    bass: false, beatsPerChord: "4" },
+  { id: "epic", label: "Epic: i bVI bIII bVII, wide and slow", mode: "minor",
+    numerals: "i bVI bIII bVII", size: "as-written", voicing: "spread", rhythm: "sustain",
+    bass: true, beatsPerChord: "8" },
+  { id: "pop-push", label: "Pop: I V vi IV, pushed changes", mode: "major",
+    numerals: "I V vi IV", size: "as-written", voicing: "close", rhythm: "push",
+    bass: true, beatsPerChord: "4" },
+  { id: "borrowed", label: "Modal interchange: I bVI bVII I", mode: "major",
+    numerals: "I bVI bVII I", size: "as-written", voicing: "open", rhythm: "sustain",
+    bass: true, beatsPerChord: "4" },
+];
+
+export const VOICINGS = [
+  { value: "close", label: "Close (tight, keys-style)" },
+  { value: "open", label: "Open (alternate voices up)" },
+  { value: "drop2", label: "Drop 2 (jazzy, wide)" },
+  { value: "drop3", label: "Drop 3 (wider)" },
+  { value: "spread", label: "Spread (root low, pad on top)" },
+  { value: "shell", label: "Shell (root, 3rd, 7th)" },
+  { value: "power", label: "Power (root, 5th, octave)" },
+];
+
+export const INVERSIONS = [
+  { value: "smooth", label: "Smooth voice leading (auto)" },
+  { value: "0", label: "Root position" },
+  { value: "1", label: "1st inversion" },
+  { value: "2", label: "2nd inversion" },
+  { value: "3", label: "3rd inversion" },
+];
+
+const CHORD_RHYTHMS = [
+  { value: "sustain", label: "Sustained" },
+  { value: "push", label: "Pushed (changes an 8th early)" },
+  { value: "quarters", label: "Stabs on every beat" },
+  { value: "offbeat", label: "Offbeat stabs (house)" },
+  { value: "eighths", label: "Pumping 8ths" },
+  { value: "sixteenths", label: "16th gate (trance)" },
+  { value: "dotted", label: "3-3-2 (dotted 8ths)" },
+  { value: "charleston", label: "Charleston" },
+];
+
+const CHORD_SIZES_PROGRESSION = [
+  { value: "as-written", label: "As written" },
+  { value: "triad", label: "Triads" },
+  { value: "seventh", label: "Sevenths" },
+  { value: "ninth", label: "Ninths" },
+];
+
+/** Voicing, inversion, and bass rows shared by several forms. */
+function voicingFields(opts: { voicing?: string; inversion?: string; bass?: boolean } = {}): string {
+  return [
+    field("Voicing", select("voicing", VOICINGS, opts.voicing ?? "close")),
+    field("Inversion", select("inversion", INVERSIONS, opts.inversion ?? "smooth")),
+    field(
+      "Bass note",
+      `<input type="checkbox" name="bass"${opts.bass ? " checked" : ""}> <span class="dim">add the root two octaves down</span>`,
+    ),
+  ].join("");
+}
+
 export function renderProgressionForm(
   options: Options,
   defaults: KeyDefaults,
@@ -257,25 +352,54 @@ export function renderProgressionForm(
     { value: "symbols", label: "Chord symbols…" },
     { value: "random", label: "Surprise me (random walk)" },
   ];
+  const recipes = JSON.stringify(
+    Object.fromEntries(PROGRESSION_RECIPES.map((r) => [r.id, r])),
+  ).replace(/</g, "\\u003c");
   const fields = [
+    `<script>
+      const RECIPES = ${recipes};
+      function applyRecipe(id) {
+        const r = RECIPES[id];
+        if (!r) return;
+        const set = (name, value) => {
+          const el = document.querySelector('[name="' + name + '"]');
+          if (!el) return;
+          if (el.type === "checkbox") el.checked = value; else el.value = value;
+        };
+        set("mode", r.mode); set("progression", "custom"); set("customNumerals", r.numerals);
+        set("size", r.size); set("voicing", r.voicing); set("inversion", "smooth");
+        set("rhythm", r.rhythm); set("bass", r.bass); set("beatsPerChord", r.beatsPerChord);
+        showRows();
+      }
+      function showRows() {
+        const value = document.querySelector('[name="progression"]').value;
+        document.getElementById('custom-row').style.display = value === 'custom' ? '' : 'none';
+        document.getElementById('symbols-row').style.display = value === 'symbols' ? '' : 'none';
+      }
+    </script>`,
+    field(
+      "Recipe",
+      `<select data-skip onchange="applyRecipe(this.value)"><option value="">Start from scratch</option>${PROGRESSION_RECIPES.map(
+        (r) => `<option value="${escapeHtml(r.id)}">${escapeHtml(r.label)}</option>`,
+      ).join("")}</select>`,
+    ),
     field("Key", select("tonic", options.tonics.map((value) => ({ value })), defaults.tonic)),
     field("Mode", select("mode", options.scales.map((value) => ({ value })), defaults.scale)),
     field(
       "Progression",
-      select("progression", progressionChoices, "I-V-vi-IV",
-        `onchange="
-          document.getElementById('custom-row').style.display = this.value === 'custom' ? '' : 'none';
-          document.getElementById('symbols-row').style.display = this.value === 'symbols' ? '' : 'none';
-        "`),
+      select("progression", progressionChoices, "I-V-vi-IV", `onchange="showRows()"`),
     ),
     `<div id="custom-row" style="display: none">${field(
       "Custom numerals",
-      `<input type="text" name="customNumerals" placeholder="e.g. I vi ii V7">`,
+      `<input type="text" name="customNumerals" placeholder="e.g. I vi ii V7, bVII, iv, V/V, IVmaj7">`,
     )}</div>`,
     `<div id="symbols-row" style="display: none">${field(
       "Chord symbols",
-      `<input type="text" name="customSymbols" placeholder="e.g. Am7 D7 Gmaj7">`,
+      `<input type="text" name="customSymbols" placeholder="e.g. Am7 D7 Gmaj7 C/E">`,
     )}</div>`,
+    field("Chord size", select("size", CHORD_SIZES_PROGRESSION, "as-written")),
+    voicingFields(),
+    field("Rhythm", select("rhythm", CHORD_RHYTHMS, "sustain")),
     field("Octave", select("octave", OCTAVES, "4")),
     field(
       "Beats per chord",
@@ -289,10 +413,59 @@ export function renderProgressionForm(
   ].join("");
   return formPage(
     "Generate Progression",
-    keySubtitle("Creates a MIDI clip with the chosen chord progression.", defaults),
+    keySubtitle("Creates a MIDI clip with the chosen chord progression, voiced to flow.", defaults),
     fields,
     "Generate",
   );
+}
+
+export function renderVoiceChordsForm(): string {
+  const fields = [
+    voicingFields(),
+    field("Register", select("octave", [
+      { value: "3", label: "Low (around C3)" },
+      { value: "4", label: "Middle (around C4)" },
+      { value: "5", label: "High (around C5)" },
+    ], "4")),
+  ].join("");
+  return formPage(
+    "Voice Chords",
+    "Re-voices every chord in this clip in place. Timing and velocity stay; one undo step.",
+    fields,
+    "Voice",
+  );
+}
+
+export function renderChordifyForm(options: Options, detected: KeyResult): string {
+  const scaleDefault =
+    detected.mode && options.scales.includes(detected.mode) ? detected.mode : "major";
+  const fields = [
+    field("Each note becomes", select("mode", [
+      { value: "root", label: "The root of its chord (one-finger chords)" },
+      { value: "top", label: "The top of its chord (harmonized melody)" },
+    ], "root")),
+    field("Chord", select("size", [
+      { value: "triad", label: "Triad" },
+      { value: "seventh", label: "Seventh" },
+      { value: "ninth", label: "Ninth" },
+      { value: "add9", label: "Add 9" },
+      { value: "sus2", label: "Sus 2" },
+      { value: "sus4", label: "Sus 4" },
+      { value: "power", label: "Power chord" },
+    ], "triad")),
+    field("Key", select("tonic", options.tonics.map((value) => ({ value })), detected.tonic ?? "C")),
+    field("Scale", select("scale", options.scales.map((value) => ({ value })), scaleDefault)),
+    voicingFields(),
+    field("Register", select("octave", [
+      { value: "3", label: "Low (around C3)" },
+      { value: "4", label: "Middle (around C4)" },
+      { value: "5", label: "High (around C5)" },
+    ], "4")),
+  ].join("");
+  const subtitle = detected.key
+    ? `Detected key: ${detected.key}. Chords stay in key; out-of-key notes get a power chord.`
+    : "Chords stay in key; out-of-key notes get a power chord.";
+  return formPage("Chordify", subtitle, fields, "Chordify");
 }
 
 export function renderScaleForm(options: Options, defaults: KeyDefaults): string {
@@ -1066,7 +1239,7 @@ export function renderSceneKeyDialog(
 }
 
 export function renderMessageDialog(title: string, message: string): string {
-  return infoPage(title, "", `<p>${escapeHtml(message)}</p>`);
+  return infoPage(title, "", `<p style="white-space: pre-line">${escapeHtml(message)}</p>`);
 }
 
 export function renderErrorDialog(message: string): string {

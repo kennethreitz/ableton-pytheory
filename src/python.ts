@@ -39,7 +39,9 @@ export type AnalysisFunction =
   | "audio_detect"
   | "apply_effects"
   | "sample_pitch"
-  | "scene_key";
+  | "scene_key"
+  | "voice_chords"
+  | "chordify";
 
 interface WorkerReply {
   id?: number;

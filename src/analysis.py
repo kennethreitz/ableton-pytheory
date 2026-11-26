@@ -6,8 +6,10 @@ Extensions SDK: pitch, startTime, duration, muted, ...
 """
 
 import base64
+import itertools
 import json
 import random
+import re
 
 from pytheory import Chord, Fretboard, Key, Raga, Tone, TonedScale, render_score
 from pytheory.rhythm import INSTRUMENTS, Pattern, Score, _RawDuration
@@ -219,20 +221,38 @@ def generate_progression(payload_json):
         return json.dumps({"error": "No chords in the progression."})
 
     # pytheory wraps out-of-range numerals around the scale silently —
-    # reject anything that isn't a degree I–VII (with b/# and 7 modifiers).
-    valid = {"I", "II", "III", "IV", "V", "VI", "VII"}
+    # reject anything that isn't a degree I–VII (b/# prefixes, qualities
+    # like maj7/ø7/9, and secondary dominants like V/V are all fine).
     for numeral in numerals:
-        base = numeral.rstrip("7").lstrip("b#").upper()
-        if base not in valid:
+        if not _valid_numeral(numeral):
             return json.dumps({"error": f"'{numeral}' isn't a Roman numeral I–VII."})
 
     try:
         key = Key(tonic, mode)
-        chords = key.progression(*numerals)
-    except (KeyError, ValueError, IndexError) as e:
-        return json.dumps({
-            "error": f"Couldn't build {'-'.join(numerals)} in {tonic} {mode}: {e}"
-        })
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Unknown key {tonic} {mode}: {e}"})
+    chords = []
+    for numeral in numerals:
+        try:
+            chords.append(key.progression(numeral)[0])
+        except (KeyError, ValueError, IndexError) as e:
+            return json.dumps({
+                "error": f"Couldn't build '{numeral}' in {tonic} {mode}: {e}"
+            })
+
+    if "voicing" in params:
+        try:
+            degrees = _scale_degrees(tonic, mode)
+        except (KeyError, ValueError):
+            degrees = []
+        specs = []
+        for chord in chords:
+            pcs = list(dict.fromkeys(t.midi % 12 for t in chord.tones))
+            specs.append(_sized(pcs[0], pcs, params.get("size", "as-written"), degrees))
+        return _layout_progression(
+            specs, params, beats, f"{tonic} {mode}: {'-'.join(numerals)}",
+            root_names=[chord.tones[0].name for chord in chords],
+        )
 
     shift = (octave - 4) * 12
     notes = []
@@ -253,6 +273,130 @@ def generate_progression(payload_json):
         "notes": notes,
         "length": len(chords) * beats,
         "name": f"{tonic} {mode}: {'-'.join(numerals)}",
+        "chordNames": labels,
+    })
+
+
+_NUMERAL = re.compile(r"^[b#♭♯]?(VII|VI|IV|V|III|II|I)(?![IV])", re.IGNORECASE)
+
+
+def _valid_numeral(numeral):
+    """A Roman numeral pytheory will place correctly (I–VII, maybe X/Y)."""
+    parts = numeral.split("/")
+    return 1 <= len(parts) <= 2 and all(_NUMERAL.match(p) for p in parts)
+
+
+def _sized(root, pcs, size, degrees):
+    """Reshape a chord to the requested size: as written, triad, 7th, 9th."""
+    ordered = _stack_order(root, pcs)
+    if size in (None, "", "as-written"):
+        return root, ordered
+    third_and_fifth = [pc for pc in ordered if (pc - root) % 12 in (3, 4, 6, 7, 8)]
+    triad = [root] + third_and_fifth[:2]
+    if size == "triad":
+        return root, triad
+    if size not in ("seventh", "ninth"):
+        raise ValueError(f"Unknown chord size: {size}")
+
+    def from_scale(steps, fallback):
+        if root in degrees and len(degrees) == 7:
+            return degrees[(degrees.index(root) + steps) % 7]
+        return (root + fallback) % 12
+
+    seventh = next((pc for pc in ordered if (pc - root) % 12 in (9, 10, 11)), None)
+    if seventh is None:
+        seventh = from_scale(6, 10)
+        if (seventh - root) % 12 not in (9, 10, 11):
+            seventh = (root + 10) % 12
+    chord = triad + [seventh]
+    if size == "ninth":
+        ninth = from_scale(1, 2)
+        if (ninth - root) % 12 == 2:  # skip a crunchy b9 (iii in major)
+            chord.append(ninth)
+    return root, chord
+
+
+# Chord rhythms: (offset, length) hits inside a repeating cycle of beats.
+CHORD_RHYTHMS = {
+    "sustain": (None, []),
+    "quarters": (1.0, [(0.0, 0.5)]),
+    "offbeat": (1.0, [(0.5, 0.25)]),
+    "eighths": (0.5, [(0.0, 0.4)]),
+    "sixteenths": (0.25, [(0.0, 0.18)]),
+    "dotted": (4.0, [(0.0, 1.25), (1.5, 1.25), (3.0, 0.75)]),
+    "charleston": (4.0, [(0.0, 0.75), (1.5, 0.5)]),
+    "push": (None, []),
+}
+
+
+def _rhythm_hits(rhythm, span):
+    """(offset, length, accent) hits for one chord lasting `span` beats."""
+    if rhythm not in CHORD_RHYTHMS:
+        raise ValueError(f"Unknown chord rhythm: {rhythm}")
+    cycle, pattern = CHORD_RHYTHMS[rhythm]
+    if cycle is None:
+        return [(0.0, span, True)]
+    hits = []
+    start = 0.0
+    while start < span - 1e-9:
+        for offset, length in pattern:
+            t = start + offset
+            if t < span - 1e-9:
+                hits.append((round(t, 6), round(min(length, span - t), 6),
+                             abs(t % 4) < 1e-9))
+        start += cycle
+    return hits
+
+
+def _layout_progression(specs, params, beats, name, basses=None, root_names=None):
+    """Voice (root, pcs) chords and lay them out with a chord rhythm."""
+    rhythm = params.get("rhythm", "sustain")
+    try:
+        settings = _voicing_params(params)
+        bass = settings.pop("bass")
+        voiced = _voice_chords(specs, **settings)
+        hits = _rhythm_hits(rhythm, beats)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    notes = []
+    labels = []
+    total = len(specs) * beats
+    for i, ((root, pcs), pitches) in enumerate(zip(specs, voiced)):
+        start = i * beats
+        labels.append(_name_chord(root, pcs,
+                                  root_name=root_names[i] if root_names else None))
+        if rhythm == "push":
+            # Anticipate each change by an eighth, the way a band pushes.
+            begin = start - 0.5 if i > 0 else start
+            end = start + beats - (0.5 if i + 1 < len(specs) else 0.0)
+            chord_hits = [(begin - start, end - begin, True)]
+        else:
+            chord_hits = hits
+        for offset, length, accent in chord_hits:
+            velocity = DEFAULT_VELOCITY if rhythm in ("sustain", "push") else (
+                108 if accent else 92)
+            for pitch in pitches:
+                notes.append({
+                    "pitch": pitch,
+                    "startTime": round(start + offset, 6),
+                    "duration": round(length, 6),
+                    "velocity": velocity,
+                })
+        bass_pc = basses[i] if basses and basses[i] is not None else (root if bass else None)
+        if bass_pc is not None:
+            notes.append({
+                "pitch": _bass_under(bass_pc, pitches, settings["octave"]),
+                "startTime": start,
+                "duration": beats,
+                "velocity": DEFAULT_VELOCITY,
+            })
+    if rhythm != "sustain":
+        name += f" ({rhythm})"
+    return json.dumps({
+        "notes": notes,
+        "length": total,
+        "name": name,
         "chordNames": labels,
     })
 
@@ -1448,6 +1592,25 @@ def generate_from_symbols(payload_json):
                      f"{', '.join(unknown)}. Try names like Am7, Bb, Cmaj7, F#m, G7."
         })
 
+    if "voicing" in params:
+        specs = []
+        basses = []
+        for symbol, chord in zip(symbols, chords):
+            head, _, slash = symbol.partition("/")
+            match = re.match(r"^[A-G][#b]?", head)
+            root = _root_pc(match.group(0)) if match else None
+            pcs = list(dict.fromkeys(t.midi % 12 for t in chord.tones))
+            if root is None or root not in pcs:
+                root = pcs[0]
+            bass_pc = _root_pc(slash) if slash and re.match(r"^[A-G][#b]?$", slash) else None
+            specs.append((root, _stack_order(root, pcs)))
+            basses.append(bass_pc)
+        roots = [re.match(r"^[A-G][#b]?", sym.partition("/")[0]) for sym in symbols]
+        return _layout_progression(
+            specs, params, beats, " ".join(symbols), basses,
+            root_names=[m.group(0) if m else None for m in roots],
+        )
+
     notes = []
     for i, chord in enumerate(chords):
         for pitch in _stacked_pitches(chord, octave):
@@ -1823,3 +1986,419 @@ def conform_to_scale(payload_json):
         conformed.append(new)
 
     return json.dumps({"notes": conformed, "changed": changed})
+
+
+# ---------------------------------------------------------------------------
+# Voicing engine: shared by Voice Chords, Chordify, and Generate Progression.
+#
+# A chord travels as (root pitch class, pitch classes in stacking order).
+# Voicings are built as MIDI numbers, with pytheory's own voicing methods
+# (Chord.inversion / drop2 / drop3 / open_voicing) doing the reshaping.
+# ---------------------------------------------------------------------------
+
+VOICING_STYLES = ("close", "open", "drop2", "drop3", "spread", "shell", "power")
+
+
+def _clamp_pitch(pitch):
+    return min(127, max(0, round(pitch)))
+
+
+def _rng(params):
+    """A random source; a fixed seed makes results repeatable (tests)."""
+    seed = params.get("seed")
+    return random.Random(None if seed in (None, "") else seed)
+
+
+def _stack_order(root, pcs):
+    """Pitch classes ordered for stacking from the root.
+
+    Core tones (third, fifth, sixth, seventh) come first, in interval order;
+    with a third present, the 9th/11th (and a 13th over a seventh) sit on top
+    as upper extensions instead of crowding the root.
+    """
+    intervals = sorted({(pc - root) % 12 for pc in pcs} - {0})
+    has_third = 3 in intervals or 4 in intervals
+    has_seventh = 10 in intervals or 11 in intervals
+    upper = set()
+    if has_third:
+        upper = {1, 2, 5} & set(intervals)
+        if has_seventh and 9 in intervals:
+            upper.add(9)
+    core = [i for i in intervals if i not in upper]
+    return [root] + [(root + i) % 12 for i in core + sorted(upper)]
+
+
+def _close_stack(root, ordered, octave):
+    """Root at `octave`, each later tone stacked just above the previous."""
+    pitch = root + 12 * (octave + 1)
+    stack = [pitch]
+    for pc in ordered[1:]:
+        pitch += (pc - pitch) % 12 or 12
+        stack.append(pitch)
+    return stack
+
+
+def _pt_reshape(pitches, method):
+    """Run one of pytheory's voicing methods over MIDI pitches."""
+    chord = Chord([Tone.from_midi(p) for p in sorted(pitches)])
+    return sorted(t.midi for t in getattr(chord, method)().tones)
+
+
+def _invert(stack, n):
+    """The nth inversion of a close stack, via Chord.inversion."""
+    n %= len(stack)
+    if n == 0:
+        return sorted(stack)
+    chord = Chord([Tone.from_midi(p) for p in sorted(stack)])
+    return sorted(t.midi for t in chord.inversion(n).tones)
+
+
+def _shape(stack, style, root):
+    """Apply a voicing style to a close stack (any inversion)."""
+    pitches = sorted(stack)
+    if style == "close" or len(pitches) < 2:
+        return pitches
+    if style == "drop2" and len(pitches) >= 3:
+        return _pt_reshape(pitches, "drop2")
+    if style == "drop3":
+        return _pt_reshape(pitches, "drop3" if len(pitches) >= 4 else "drop2")
+    if style == "open":
+        return _pt_reshape(pitches, "open_voicing")
+    if style == "spread":
+        # Root alone at the bottom, everything else an octave up: a pad.
+        low = min(p for p in pitches if p % 12 == root % 12) if any(
+            p % 12 == root % 12 for p in pitches) else pitches[0]
+        return sorted([low] + [p + 12 if p > low else p + 24 for p in pitches if p != low])
+    if style == "shell":
+        # Root, third, seventh (or fifth when there's no seventh).
+        root_pitch = next((p for p in pitches if p % 12 == root % 12), pitches[0])
+        keep = [root_pitch]
+        for wanted in ((3, 4), (10, 11, 9), (7,)):
+            match = next((p for p in pitches if (p - root) % 12 in wanted and p not in keep), None)
+            if match is not None:
+                keep.append(match)
+            if len(keep) == 3:
+                break
+        return sorted(keep)
+    if style == "power":
+        base = next((p for p in pitches if p % 12 == root % 12), pitches[0])
+        return [base, base + 7, base + 12]
+    return pitches
+
+
+def _register(shape, center):
+    """Shift a shape by octaves so its average sits nearest `center`."""
+    mean = sum(shape) / len(shape)
+    shift = 12 * round((center - mean) / 12)
+    return [p + shift for p in shape]
+
+
+def _movement(a, b):
+    """Voice-leading distance: every voice to its nearest neighbour, both ways."""
+    return (sum(min(abs(p - q) for q in b) for p in a)
+            + sum(min(abs(p - q) for q in a) for p in b))
+
+
+def _voicing_cost(previous, candidate, center):
+    """Movement from the last chord, drift from the register, and mud."""
+    drift = abs(sum(candidate) / len(candidate) - center)
+    # Seconds stacked together read as mud: a small penalty each.
+    crunch = sum(1 for a, b in itertools.pairwise(candidate) if b - a <= 2)
+    return _movement(previous, candidate) + 0.6 * drift + 1.5 * crunch
+
+
+def _voice_chords(chords, style="close", inversion="smooth", octave=4, bass=False):
+    """Voice a sequence of (root, ordered pcs) chords.
+
+    inversion: "smooth" (pick each chord's inversion and octave to move as
+    little as possible from the last — first chord in root position),
+    or "0".."3" to force an inversion on every chord.
+    Returns a list of pitch lists (bass note first when `bass` is set).
+    """
+    if style not in VOICING_STYLES:
+        raise ValueError(f"Unknown voicing: {style}")
+    center = 12 * (octave + 1) + 7  # a little above the octave's C
+    voiced = []
+    previous = None
+    for root, ordered in chords:
+        if len(ordered) >= 5 and (root + 7) % 12 in ordered:
+            # Five-note chords drop their fifth, as players do: the 9th
+            # and 7th carry the colour, the fifth just muddies the stack.
+            ordered = [pc for pc in ordered if pc != (root + 7) % 12]
+        stack = _close_stack(root, ordered, octave)
+        if inversion == "smooth" and previous is not None:
+            candidates = []
+            for n in range(len(stack)):
+                shape = _shape(_invert(stack, n), style, root)
+                base = _register(shape, center)
+                for shift in (-12, 0, 12):
+                    candidates.append([p + shift for p in base])
+
+            pitches = min(candidates, key=lambda c, prev=previous: _voicing_cost(prev, c, center))
+        else:
+            n = 0 if inversion == "smooth" else int(inversion)
+            pitches = _register(_shape(_invert(stack, n), style, root), center)
+        pitches = sorted({_clamp_pitch(p) for p in pitches})
+        previous = pitches
+        if bass:
+            pitches = [_bass_under(root, pitches, octave)] + pitches
+        voiced.append(pitches)
+    return voiced
+
+
+def _bass_under(root, pitches, octave):
+    """The root two octaves under the chord's register, below every voice."""
+    low = 12 * (octave - 1) + root % 12
+    while low >= min(pitches):
+        low -= 12
+    return _clamp_pitch(low)
+
+
+def _symbol_for(pitches):
+    chord = Chord([Tone.from_midi(p) for p in sorted(set(pitches))])
+    return _chord_label(chord)
+
+
+_SIZE_SUFFIX = {"add9": "add9", "sus2": "sus2", "sus4": "sus4", "power": "5"}
+
+
+def _name_chord(root, pcs, size=None, root_name=None):
+    """Name a chord from its intended root (not its lowest voiced note).
+
+    MIDI-derived names come out sharp; pass `root_name` (e.g. "Bb" from the
+    key's spelling) to respell the root.
+    """
+    symbol = _symbol_for(_close_stack(root, _stack_order(root, pcs), 4))
+    if symbol and root_name:
+        head = re.match(r"^[A-G][#b]?", symbol)
+        if head and _root_pc(head.group(0)) == _root_pc(root_name):
+            symbol = root_name + symbol[head.end():]
+    if symbol:
+        return symbol
+    name = root_name or TONICS[root % 12]
+    if size == "add9" and (root + 2) % 12 in pcs:
+        return name + ("madd9" if (root + 3) % 12 in pcs else "add9")
+    return name + _SIZE_SUFFIX[size] if size in ("power",) else f"{name} chord"
+
+
+def _chord_clusters(notes):
+    """Onset clusters holding a real chord (2+ pitch classes), with roots."""
+    found = []
+    for cluster in _cluster_chords(notes):
+        pitches = sorted({n["pitch"] for n in cluster["notes"]})
+        pcs = {p % 12 for p in pitches}
+        if len(pcs) < 2:
+            continue
+        chord = Chord([Tone.from_midi(p) for p in pitches])
+        identified = chord.identify()
+        root = _root_pc(identified.partition(" ")[0]) if identified else None
+        if root is None:
+            root = pitches[0] % 12
+        found.append({
+            "start": cluster["start"],
+            "end": max(n["startTime"] + n["duration"] for n in cluster["notes"]),
+            "notes": cluster["notes"],
+            "pitches": pitches,
+            "root": root,
+            "pcs": _stack_order(root, pcs),
+            "chord": chord,
+        })
+    return found
+
+
+def _voicing_params(params):
+    style = params.get("voicing", "close")
+    inversion = str(params.get("inversion", "smooth"))
+    if inversion not in ("smooth", "0", "1", "2", "3"):
+        raise ValueError(f"Unknown inversion: {inversion}")
+    return {
+        "style": style,
+        "inversion": inversion,
+        "octave": int(params.get("octave", 4)),
+        "bass": params.get("bass") in (True, "root", "yes"),
+    }
+
+
+def voice_chords(payload_json):
+    """Re-voice every chord in a clip: style, inversion, register, bass."""
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    sounding = [n for n in notes if not n.get("muted")]
+    try:
+        settings = _voicing_params(params)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    clusters = _chord_clusters(sounding)
+    if not clusters:
+        return json.dumps({"error": "No chords to voice — the clip looks monophonic."})
+
+    try:
+        voiced = _voice_chords([(c["root"], c["pcs"]) for c in clusters], **settings)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+
+    chord_ids = {id(n) for c in clusters for n in c["notes"]}
+    result = [n for n in notes if id(n) not in chord_ids]
+    symbols = []
+    for cluster, pitches in zip(clusters, voiced):
+        template = max(cluster["notes"], key=lambda n: n.get("velocity", 100))
+        velocity = round(sum(n.get("velocity", 100) for n in cluster["notes"])
+                         / len(cluster["notes"]))
+        for pitch in pitches:
+            new = dict(template)
+            new.update({
+                "pitch": pitch,
+                "startTime": cluster["start"],
+                "duration": round(cluster["end"] - cluster["start"], 6),
+                "velocity": velocity,
+            })
+            result.append(new)
+        symbols.append(_chord_label(cluster["chord"]) or "?")
+    return json.dumps({"notes": result, "voiced": len(clusters), "symbols": symbols})
+
+
+CHORD_SIZES = {
+    # Scale-degree offsets stacked on the chosen degree.
+    "triad": [0, 2, 4],
+    "seventh": [0, 2, 4, 6],
+    "ninth": [0, 2, 4, 6, 8],
+    "sus2": [0, 1, 4],
+    "sus4": [0, 3, 4],
+    "add9": [0, 2, 4, 8],
+    "power": [0, 4],
+}
+
+
+def _diatonic_chord(degrees, index, size):
+    """Pitch classes of the diatonic chord on scale degree `index`.
+
+    Sus chords must be real sus chords (a perfect fifth, and a whole-step
+    2nd or perfect 4th): where the scale can't give one on this degree
+    (E–F–B in C major), the other sus is tried, then the plain triad.
+    """
+    def build(steps):
+        return [degrees[(index + step) % len(degrees)] for step in steps]
+
+    if size in ("sus2", "sus4"):
+        root = degrees[index]
+        wanted = {"sus2": [("sus2", 2), ("sus4", 5)],
+                  "sus4": [("sus4", 5), ("sus2", 2)]}[size]
+        for name, interval in wanted:
+            pcs = build(CHORD_SIZES[name])
+            if ((pcs[1] - root) % 12, (pcs[2] - root) % 12) == (interval, 7):
+                return pcs
+        return build(CHORD_SIZES["triad"])
+    return build(CHORD_SIZES[size])
+
+
+# How willing each scale degree is to carry a melody note (pillars first).
+_DEGREE_PREFERENCE = {0: 3.0, 3: 2.6, 4: 2.6, 5: 2.2, 1: 1.6, 2: 1.0, 6: 0.6}
+
+
+def chordify(payload_json):
+    """Turn single notes into chords in key.
+
+    mode "root": every note becomes the root of the diatonic chord on its
+    scale degree (one-finger chords). mode "top": every note stays on top
+    and gets the best-fitting diatonic chord voiced underneath (block
+    harmonization). Out-of-key notes get a power chord (root mode) or are
+    left alone (top mode).
+    """
+    params = json.loads(payload_json)
+    notes = params["notes"]
+    mode = params.get("mode", "root")
+    size = params.get("size", "triad")
+    if size not in CHORD_SIZES:
+        return json.dumps({"error": f"Unknown chord size: {size}"})
+    try:
+        degrees = _scale_degrees(params["tonic"], params["scale"])
+        settings = _voicing_params(params)
+    except (KeyError, ValueError) as e:
+        return json.dumps({"error": f"Couldn't use that key: {e}"})
+    if len(degrees) < 5:
+        return json.dumps({"error": "Chordify needs a scale with at least five notes."})
+
+    sounding = [n for n in notes if not n.get("muted")]
+    if not sounding:
+        return json.dumps({"error": "This clip has no unmuted notes."})
+    muted = [n for n in notes if n.get("muted")]
+
+    clusters = _cluster_chords(sounding)
+    result = list(muted)
+    symbols = []
+    if mode == "root":
+        chords = []
+        for cluster in clusters:
+            lead = min(cluster["notes"], key=lambda n: n["pitch"])
+            pc = lead["pitch"] % 12
+            if pc in degrees:
+                pcs = _diatonic_chord(degrees, degrees.index(pc), size)
+                if size == "power":
+                    pcs = [pc, (pc + 7) % 12]
+            else:
+                pcs = [pc, (pc + 7) % 12]  # out of key: a neutral power chord
+            chords.append((pc, _stack_order(pc, pcs) if size not in ("sus2", "sus4", "power") else pcs))
+        try:
+            voiced = _voice_chords(chords, **settings)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+        for cluster, pitches, (root, pcs) in zip(clusters, voiced, chords):
+            lead = min(cluster["notes"], key=lambda n: n["pitch"])
+            end = max(n["startTime"] + n["duration"] for n in cluster["notes"])
+            for pitch in pitches:
+                new = dict(lead)
+                new.update({"pitch": pitch, "startTime": cluster["start"],
+                            "duration": round(end - cluster["start"], 6)})
+                result.append(new)
+            symbols.append(_name_chord(root, pcs, size))
+    elif mode == "top":
+        previous_index = None
+        for cluster in clusters:
+            top = max(cluster["notes"], key=lambda n: n["pitch"])
+            result.extend(cluster["notes"])  # the melody itself stays put
+            pc = top["pitch"] % 12
+            candidates = [
+                i for i in range(len(degrees))
+                if pc in _diatonic_chord(degrees, i, size)
+            ]
+            if not candidates:
+                symbols.append("—")
+                previous_index = None
+                continue
+
+            def score(i, pc=pc, previous=previous_index):
+                s = _DEGREE_PREFERENCE.get(i, 0.5)
+                if pc != degrees[i]:
+                    s += 0.3  # melody on the third or fifth sounds fuller
+                if i == previous:
+                    s -= 0.9  # keep the harmony moving
+                return s
+
+            index = max(candidates, key=score)
+            previous_index = index
+            pcs = [p for p in _diatonic_chord(degrees, index, size) if p != pc]
+            under = sorted(top["pitch"] - ((top["pitch"] - p) % 12 or 12) for p in pcs)
+            voicing = under + [top["pitch"]]
+            if settings["style"] in ("drop2", "open", "spread") and len(voicing) >= 3:
+                voicing[-2] -= 12
+            elif settings["style"] == "drop3" and len(voicing) >= 4:
+                voicing[-3] -= 12
+            voicing = sorted(voicing)
+            if settings["bass"]:
+                low = degrees[index] + 12 * (settings["octave"] - 1)
+                while low >= voicing[0]:
+                    low -= 12
+                voicing = [low] + voicing
+            velocity = max(1, int(top.get("velocity", 100) * 0.85))
+            for pitch in voicing[:-1]:
+                if not 0 <= pitch <= 127:
+                    continue
+                new = dict(top)
+                new.update({"pitch": pitch, "velocity": velocity})
+                result.append(new)
+            symbols.append(_name_chord(degrees[index],
+                                       _diatonic_chord(degrees, index, size), size))
+    else:
+        return json.dumps({"error": f"Unknown mode: {mode}"})
+
+    return json.dumps({"notes": result, "chords": len(clusters), "symbols": symbols})

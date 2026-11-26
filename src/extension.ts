@@ -27,6 +27,7 @@ import {
   renderAudioDetectDialog,
   renderAudioToMidiForm,
   renderBasslineForm,
+  renderChordifyForm,
   renderChordsDialog,
   renderConformForm,
   renderDrumsForm,
@@ -51,6 +52,7 @@ import {
   renderTabsDialog,
   renderTabsForm,
   renderTransposeForm,
+  renderVoiceChordsForm,
   type AudioDetectResult,
   type ChordsResult,
   type KeyDefaults,
@@ -158,6 +160,8 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Conform to Scale…", "pytheory.conform", conformToScale],
     ["MidiClip", "Transpose to Key…", "pytheory.transpose", transposeToKey],
     ["MidiClip", "Smooth Voicings", "pytheory.smooth-voicings", smoothVoicings],
+    ["MidiClip", "Voice Chords…", "pytheory.voice-chords", voiceChords],
+    ["MidiClip", "Chordify…", "pytheory.chordify", chordify],
     ["MidiClip", "Invert Melody", "pytheory.invert", invertMelody],
     ["MidiClip", "Retrograde", "pytheory.retrograde", retrogradeClip],
     ["MidiClip", "Render to Audio…", "pytheory.render-audio", renderAudio],
@@ -1129,11 +1133,21 @@ async function generateProgression(context: Context, handle: Handle) {
   );
   if (!params) return;
 
+  // The voicing, size, and rhythm rows apply to every progression source.
+  const shaping = {
+    voicing: params.voicing,
+    inversion: params.inversion,
+    size: params.size,
+    rhythm: params.rhythm,
+    bass: Boolean(params.bass),
+  };
+
   if (params.progression === "symbols") {
     const generated = await analyze<GeneratedClip>("generate_from_symbols", {
       symbols: params.customSymbols,
       octave: params.octave,
       beatsPerChord: params.beatsPerChord,
+      ...shaping,
     });
     if (generated.error) {
       await showDialog(context, renderErrorDialog(generated.error), 420, 200);
@@ -1158,6 +1172,7 @@ async function generateProgression(context: Context, handle: Handle) {
     length: 4,
     octave: params.octave,
     beatsPerChord: params.beatsPerChord,
+    ...shaping,
   });
   if (generated.error) {
     await showDialog(context, renderErrorDialog(generated.error), 420, 200);
@@ -1405,5 +1420,110 @@ function showDialog(
     `data:text/html,${encodeURIComponent(html)}`,
     width,
     height,
+  );
+}
+
+/** Notes, or an error dialog (and null) when the clip has none. */
+async function clipNotes(
+  context: Context,
+  clip: MidiClip<typeof API_VERSION>,
+): Promise<NoteDescription[] | null> {
+  const notes = clip.notes;
+  if (notes.length === 0) {
+    await showDialog(context, renderErrorDialog("This clip has no notes."), 420, 200);
+    return null;
+  }
+  return notes;
+}
+
+/** Detected key, falling back to the Set's key when the clip is ambiguous. */
+async function detectWithFallback(
+  context: Context,
+  notes: NoteDescription[],
+  progress: string,
+): Promise<[Options, KeyResult]> {
+  const [options, detected] = (await context.ui.withinProgressDialog(
+    progress,
+    {},
+    () =>
+      Promise.all([
+        analyze<Options>("get_options", null),
+        analyze<KeyResult>("detect_key", notes),
+      ]),
+  )) as [Options, KeyResult];
+  if (!detected.tonic) {
+    const fromSet = songKey(context, options);
+    if (fromSet.source === "set") {
+      detected.tonic = fromSet.tonic;
+      detected.mode = fromSet.scale;
+    }
+  }
+  return [options, detected];
+}
+
+/** Replace a clip's notes in one undo step and say what happened. */
+async function writeNotes(
+  context: Context,
+  clip: MidiClip<typeof API_VERSION>,
+  notes: NoteDescription[],
+  title: string,
+  message: string,
+) {
+  context.withinTransaction(() => {
+    clip.notes = notes;
+  });
+  await showDialog(context, renderMessageDialog(title, message), 460, 220);
+}
+
+function summarize(symbols: string[], limit = 16): string {
+  if (!symbols.length) return "";
+  const shown = symbols.slice(0, limit).join("  ");
+  return symbols.length > limit ? `${shown}  …` : shown;
+}
+
+async function voiceChords(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = await clipNotes(context, clip);
+  if (!notes) return;
+  const params = await showForm(context, renderVoiceChordsForm(), 460, 300);
+  if (!params) return;
+  const result = await analyze<{ notes: NoteDescription[]; voiced: number; symbols: string[] }>(
+    "voice_chords",
+    { notes, ...params },
+  );
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+  await writeNotes(
+    context,
+    clip,
+    result.notes,
+    "Voice Chords",
+    `Voiced ${result.voiced} ${result.voiced === 1 ? "chord" : "chords"}.\n${summarize(result.symbols)}`,
+  );
+}
+
+async function chordify(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const notes = await clipNotes(context, clip);
+  if (!notes) return;
+  const [options, detected] = await detectWithFallback(context, notes, "Reading the key…");
+  const params = await showForm(context, renderChordifyForm(options, detected), 480, 440);
+  if (!params) return;
+  const result = await analyze<{ notes: NoteDescription[]; chords: number; symbols: string[] }>(
+    "chordify",
+    { notes, ...params },
+  );
+  if (result.error) {
+    await showDialog(context, renderErrorDialog(result.error), 420, 200);
+    return;
+  }
+  await writeNotes(
+    context,
+    clip,
+    result.notes,
+    "Chordify",
+    `Built ${result.chords} ${result.chords === 1 ? "chord" : "chords"} in ${params.tonic} ${params.scale}.\n${summarize(result.symbols)}`,
   );
 }
