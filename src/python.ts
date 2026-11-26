@@ -44,7 +44,8 @@ export type AnalysisFunction =
   | "chordify"
   | "strum"
   | "humanize"
-  | "generate_euclidean";
+  | "generate_euclidean"
+  | "generate_chord_melody";
 
 interface WorkerReply {
   id?: number;

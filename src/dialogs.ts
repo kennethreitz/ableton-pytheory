@@ -1245,6 +1245,9 @@ export function renderBasslineForm(): string {
         { value: "roots", label: "Roots only" },
         { value: "walking", label: "Walking (jazz)" },
         { value: "arpeggio", label: "Arpeggiated (eighths)" },
+        { value: "offbeat", label: "Offbeat (house)" },
+        { value: "octave", label: "Octave pump (disco)" },
+        { value: "syncopated", label: "Syncopated 16ths" },
       ], "root-fifth"),
     ),
     field(
@@ -1259,6 +1262,33 @@ export function renderBasslineForm(): string {
   return formPage(
     "Generate Bassline",
     "Follows this clip's chords onto a new MIDI track.",
+    fields,
+    "Generate",
+  );
+}
+
+export function renderChordMelodyForm(): string {
+  const fields = [
+    field("Style", select("style", [
+      { value: "singable", label: "Singable (chord tones on the beat, steps between)" },
+      { value: "hook", label: "Hook (a repeating motif re-fit to each chord)" },
+      { value: "chord-tones", label: "Chord tones only (arp-like)" },
+    ], "singable")),
+    field("Density", select("density", [
+      { value: "sparse", label: "Sparse (quarters and halves)" },
+      { value: "medium", label: "Medium (eighths)" },
+      { value: "busy", label: "Busy (sixteenths)" },
+    ], "medium")),
+    field("Register", select("octave", [
+      { value: "4", label: "Middle (around C4)" },
+      { value: "5", label: "High (around C5)" },
+      { value: "6", label: "Lead (around C6)" },
+    ], "5")),
+    field("Rests", slider("rests", "0.12", { min: "0", max: "0.5", step: "0.02" })),
+  ].join("");
+  return formPage(
+    "Generate Melody Over Chords",
+    "Writes a melody that follows this clip's chords onto a new MIDI track.",
     fields,
     "Generate",
   );

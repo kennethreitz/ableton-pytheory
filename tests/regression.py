@@ -298,8 +298,68 @@ class Euclid(unittest.TestCase):
         self.assertEqual([n["startTime"] for n in result["notes"]][:3], [0.0, 0.75, 1.5])
 
 
+class FollowTheChords(unittest.TestCase):
+    PROGRESSION = _notes([[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]] * 2)
+
+    def test_melody_follows_chords(self):
+        chords = [{57 % 12, 60 % 12, 64 % 12}, {53 % 12, 57 % 12, 60 % 12},
+                  {48 % 12, 52 % 12, 55 % 12}, {55 % 12, 59 % 12, 62 % 12}] * 2
+        scale = {0, 2, 4, 5, 7, 9, 11}
+        for style in ("singable", "hook", "chord-tones"):
+            for density in ("sparse", "medium", "busy"):
+                with self.subTest(style=style, density=density):
+                    result = json.loads(generate_chord_melody(json.dumps({
+                        "notes": self.PROGRESSION, "style": style, "density": density,
+                        "seed": 11})))
+                    self.assertNotIn("error", result)
+                    self.assertEqual(result["length"], 32)
+                    melody = result["notes"]
+                    self.assertGreater(len(melody), 8)
+                    for n in melody:
+                        self.assertIn(n["pitch"] % 12, scale)
+                        self.assertLessEqual(n["startTime"] + n["duration"], 32 + 1e-9)
+                        # On the beat, the melody is always in the chord.
+                        if abs(n["startTime"] - round(n["startTime"])) < 1e-6:
+                            self.assertIn(n["pitch"] % 12, chords[int(n["startTime"] // 4)])
+                    if style == "chord-tones":
+                        for n in melody:
+                            self.assertIn(n["pitch"] % 12, chords[int(n["startTime"] // 4)])
+                    starts = [n["startTime"] for n in melody]
+                    self.assertEqual(starts, sorted(starts))
+                    self.assertEqual(result["chordTonePercent"], 100)
+
+    def test_hook_repeats_rhythm(self):
+        result = json.loads(generate_chord_melody(json.dumps({
+            "notes": self.PROGRESSION, "style": "hook", "density": "medium", "seed": 5})))
+        bars = {}
+        for n in result["notes"]:
+            bars.setdefault(int(n["startTime"] // 8), []).append(round(n["startTime"] % 8, 6))
+        self.assertEqual(len({tuple(v) for v in bars.values()}), 1)
+
+    def test_melody_needs_chords(self):
+        mono = [{"pitch": 60, "startTime": 0, "duration": 1}]
+        self.assertIn("error", json.loads(generate_chord_melody(json.dumps({"notes": mono}))))
+
+    def test_bass_styles(self):
+        chord = _notes([[60, 64, 67]])
+        expect = {
+            "offbeat": [0.5, 1.5, 2.5, 3.5],
+            "octave": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5],
+            "syncopated": [0.0, 0.75, 1.5, 2.0, 3.5, 3.75],
+        }
+        for style, starts in expect.items():
+            with self.subTest(style=style):
+                result = json.loads(generate_bassline(json.dumps(
+                    {"notes": chord, "style": style, "octave": 2})))
+                self.assertEqual([n["startTime"] for n in result["notes"]], starts)
+                self.assertEqual(result["notes"][0]["pitch"] % 12, 0)
+        octave = json.loads(generate_bassline(json.dumps(
+            {"notes": chord, "style": "octave", "octave": 2})))
+        self.assertEqual([n["pitch"] for n in octave["notes"][:2]], [36, 48])
+
+
 suite = unittest.TestSuite()
-for case in (ReleaseRegression, Voicings, Progressions, Groove, Euclid):
+for case in (ReleaseRegression, Voicings, Progressions, Groove, Euclid, FollowTheChords):
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(case))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 if not result.wasSuccessful():

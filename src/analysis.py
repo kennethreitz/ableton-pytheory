@@ -1876,6 +1876,33 @@ def generate_bassline(payload_json):
                     emit(min(127, max(0, pitch)), beat, duration)
                 else:
                     emit(place(tones[j % 4]), beat, duration, accent=j == 0)
+        elif style == "offbeat":
+            # House: the root on every "and", leaving the kick its space.
+            beat = c["start"] + 0.5
+            while beat < c["end"] - 1e-9:
+                emit(place(c["root"]), beat, min(0.375, c["end"] - beat), accent=True)
+                beat += 1.0
+        elif style == "octave":
+            # Disco: root, octave up, every eighth.
+            beat = c["start"]
+            j = 0
+            while beat < c["end"] - 1e-9:
+                pitch = place(c["root"]) + (12 if j % 2 else 0)
+                emit(min(127, pitch), beat, min(0.375, c["end"] - beat), accent=j % 2 == 0)
+                j += 1
+                beat += 0.5
+        elif style == "syncopated":
+            # A 16th-grid groove per bar: 1, the "a" of 1, the "and" of 2,
+            # 3, the "and" of 4 — root and fifth, ending on a pickup.
+            hits = [(0.0, "root", 0.5), (0.75, "root", 0.25), (1.5, "fifth", 0.5),
+                    (2.0, "root", 0.75), (3.5, "fifth", 0.25), (3.75, "root", 0.25)]
+            bar = c["start"]
+            while bar < c["end"] - 1e-9:
+                for offset, tone, length in hits:
+                    t = bar + offset
+                    if t < c["end"] - 1e-9:
+                        emit(place(c[tone]), t, min(length, c["end"] - t), accent=offset == 0)
+                bar += 4.0
         else:
             return json.dumps({"error": f"Unknown bassline style: {style}"})
 
@@ -2690,3 +2717,174 @@ def generate_euclidean(payload_json):
     if not notes:
         return json.dumps({"error": "That pattern has no hits."})
     return json.dumps({"notes": notes, "length": total, "name": name})
+
+
+# ---------------------------------------------------------------------------
+# Melody over chords
+# ---------------------------------------------------------------------------
+
+_MELODY_RHYTHMS = {
+    # (duration, weight) choices per density.
+    "sparse": [(1.0, 5), (2.0, 3), (0.5, 2)],
+    "medium": [(0.5, 5), (1.0, 3), (0.25, 2)],
+    "busy": [(0.25, 5), (0.5, 4), (0.125, 1)],
+}
+
+
+def _rhythm_bar(rng, density, length=4.0):
+    """One bar (or `length` beats) of note durations that fill it exactly."""
+    choices = _MELODY_RHYTHMS[density]
+    out = []
+    position = 0.0
+    while position < length - 1e-9:
+        duration = rng.choices([d for d, _ in choices], [w for _, w in choices])[0]
+        # Stay on the grid: a note can't straddle a boundary of its own
+        # length (an 8th starting on the "e" becomes a 16th).
+        boundary = (int(position / duration + 1e-9) + 1) * duration
+        duration = min(duration, boundary - position, length - position)
+        out.append((round(position, 6), round(duration, 6)))
+        position += duration
+    return out
+
+
+def generate_chord_melody(payload_json):
+    """A melody that follows a chord clip.
+
+    Chord tones land on the beats and wherever a chord changes; between
+    them the line moves by step through the key (passing and neighbour
+    tones), and leans into the next chord. style "hook" writes a one-bar
+    (two-bar on longer clips) rhythmic motif and re-fits it to every
+    chord; "chord-tones" never leaves the harmony.
+    """
+    params = json.loads(payload_json)
+    notes = [n for n in params["notes"] if not n.get("muted")]
+    density = params.get("density", "medium")
+    style = params.get("style", "singable")
+    octave = int(params.get("octave", 5))
+    rest_chance = float(params.get("rests", 0.12))
+    if density not in _MELODY_RHYTHMS:
+        return json.dumps({"error": f"Unknown density: {density}"})
+    if style not in ("singable", "hook", "chord-tones"):
+        return json.dumps({"error": f"Unknown melody style: {style}"})
+    rng = _rng(params)
+
+    clusters = _chord_clusters(notes)
+    if not clusters:
+        return json.dumps({"error": "No chords found to write a melody over."})
+    key = Key.detect(*_note_names(n["pitch"] for n in notes))
+    degrees = _scale_degrees(key.tonic_name, key.mode) if key else sorted(
+        {pc for c in clusters for pc in c["pcs"]})
+
+    low = 12 * (octave + 1) - 5
+    high = 12 * (octave + 1) + 14
+    center = 12 * (octave + 1) + 5
+    scale_pool = [p for p in range(low, high + 1) if p % 12 in degrees]
+    total = max(c["end"] for c in clusters)
+    start = min(c["start"] for c in clusters)
+
+    def chord_at(t):
+        current = clusters[0]
+        for c in clusters:
+            if c["start"] <= t + 1e-9:
+                current = c
+        return current
+
+    def next_chord(t):
+        return next((c for c in clusters if c["start"] > t + 1e-9), None)
+
+    def pick(candidates, previous):
+        """Weighted choice: small moves, no big drift from the centre."""
+        if not candidates:
+            return previous
+        weights = []
+        for p in candidates:
+            move = abs(p - previous)
+            w = {0: 0.6, 1: 3.0, 2: 3.5, 3: 2.2, 4: 2.0, 5: 1.0, 7: 0.8}.get(move, 0.3)
+            w *= max(0.1, 1 - abs(p - center) / 12)
+            weights.append(w)
+        return rng.choices(candidates, weights)[0]
+
+    # Rhythm: free bars, or a repeating motif for hooks.
+    bars = max(1, round((total - start) / 4))
+    motif_bars = 2 if style == "hook" and bars >= 4 else 1
+    motif = [e for b in range(motif_bars)
+             for e in ((t + 4 * b, d) for t, d in _rhythm_bar(rng, density))]
+    events = []
+    for bar in range(bars):
+        if style == "hook":
+            offset = 4 * (bar - bar % motif_bars)
+            base = [(t + offset, d) for t, d in motif if 4 * (bar % motif_bars) <= t < 4 * (bar % motif_bars + 1)]
+        else:
+            base = [(t + 4 * bar, d) for t, d in _rhythm_bar(rng, density)]
+        events.extend((start + t, d) for t, d in base)
+    events = [(t, min(d, total - t)) for t, d in events if t < total - 1e-9]
+
+    # The hook's contour: scale steps between notes, reused every repeat.
+    contour = [rng.choice([-2, -1, -1, 1, 1, 2, 3, -3]) for _ in motif]
+
+    result = []
+    previous = min(
+        (p for p in scale_pool if p % 12 in clusters[0]["pcs"]),
+        key=lambda p: abs(p - center), default=center,
+    )
+    on_chord_tones = 0
+    strong_count = 0
+    for i, (t, duration) in enumerate(events):
+        chord = chord_at(t)
+        tones = [p for p in scale_pool if p % 12 in chord["pcs"]]
+        upcoming = next_chord(t)
+        strong = abs(t - round(t)) < 1e-6 or abs(t - chord["start"]) < 1e-6
+        first_of_phrase = i == 0 or abs((t - start) % (4 * motif_bars)) < 1e-6
+        if style != "hook" and not first_of_phrase and rng.random() < rest_chance and not strong:
+            continue
+
+        if style == "chord-tones" or strong:
+            candidates = [p for p in tones if abs(p - previous) <= 7] or tones
+            if style == "hook" and not first_of_phrase:
+                step = contour[i % len(contour)]
+                target = previous + step * 2
+                candidates = sorted(candidates, key=lambda p, target=target: abs(p - target))[:2]
+            pitch = pick(candidates, previous)
+        else:
+            if style == "hook":
+                step = contour[i % len(contour)]
+                index = min(range(len(scale_pool)), key=lambda j: abs(scale_pool[j] - previous))
+                index = max(0, min(len(scale_pool) - 1, index + step))
+                pitch = scale_pool[index]
+            else:
+                candidates = [p for p in scale_pool if 0 < abs(p - previous) <= 4]
+                leading = upcoming and t + duration >= upcoming["start"] - 1e-6
+                if leading:
+                    # Lean into the next chord: a step away from one of its tones.
+                    near = [p for p in candidates
+                            if any(abs(p - q) in (1, 2) for q in scale_pool if q % 12 in upcoming["pcs"])]
+                    candidates = near or candidates
+                pitch = pick(candidates, previous)
+        if strong:
+            strong_count += 1
+            if pitch % 12 in chord["pcs"]:
+                on_chord_tones += 1
+        result.append({
+            "pitch": _clamp_pitch(pitch),
+            "startTime": round(t, 6),
+            "duration": round(duration, 6),
+            "velocity": rng.randint(96, 112) if strong else rng.randint(80, 98),
+        })
+        previous = pitch
+
+    # End on a chord tone of the last chord, preferring the tonic.
+    if result:
+        last_chord = chord_at(result[-1]["startTime"])
+        tones = [p for p in scale_pool if p % 12 in last_chord["pcs"]]
+        tonic_pc = degrees[0]
+        home = [p for p in tones if p % 12 == tonic_pc] or tones
+        if home:
+            result[-1]["pitch"] = min(home, key=lambda p: abs(p - result[-1]["pitch"]))
+
+    return json.dumps({
+        "notes": result,
+        "length": total,
+        "name": f"melody ({style}, {density})",
+        "key": str(key) if key else None,
+        "chordTonePercent": round(100 * on_chord_tones / strong_count) if strong_count else 0,
+    })

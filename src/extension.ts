@@ -28,6 +28,7 @@ import {
   renderAudioToMidiForm,
   renderBasslineForm,
   renderChordifyForm,
+  renderChordMelodyForm,
   renderChordsDialog,
   renderConformForm,
   renderDrumsForm,
@@ -158,6 +159,7 @@ export function activate(activation: ActivationContext) {
     ["MidiClip", "Reharmonize…", "pytheory.reharmonize", reharmonizeClip],
     ["MidiClip", "Show Notation", "pytheory.notation", showNotation],
     ["MidiClip", "Generate Bassline…", "pytheory.bassline", generateBassline],
+    ["MidiClip", "Generate Melody Over Chords…", "pytheory.chord-melody", generateChordMelody],
     ["MidiClip", "Guitar Tabs…", "pytheory.guitar-tabs", guitarTabs],
     ["MidiClip", "Harmonize…", "pytheory.harmonize", harmonize],
     ["MidiClip", "Arpeggiate…", "pytheory.arpeggiate", arpeggiate],
@@ -538,11 +540,15 @@ async function generateBassline(context: Context, handle: Handle) {
     return;
   }
 
-  // Put the bassline on a fresh MIDI track, at the same scene as the
-  // source clip when we can find it.
-  const song = context.application.song;
-  let sceneIndex = 0;
-  for (const track of song.tracks) {
+  await placeOnNewTrack(context, clip, `${clipName} bass`, {
+    ...generated,
+    name: `${clipName} ${generated.name}`,
+  });
+}
+
+/** The Session scene index holding `clip`, or 0 (e.g. Arrangement clips). */
+function sceneIndexOf(context: Context, clip: unknown): number {
+  for (const track of context.application.song.tracks) {
     const index = track.clipSlots.findIndex((slot) => {
       try {
         return slot.clip === clip;
@@ -550,23 +556,48 @@ async function generateBassline(context: Context, handle: Handle) {
         return false;
       }
     });
-    if (index >= 0) {
-      sceneIndex = index;
-      break;
-    }
+    if (index >= 0) return index;
   }
+  return 0;
+}
 
-  const track = await song.createMidiTrack();
+/** Put a generated part on a fresh MIDI track, beside its source clip. */
+async function placeOnNewTrack(
+  context: Context,
+  source: unknown,
+  trackName: string,
+  generated: GeneratedClip,
+) {
+  const sceneIndex = sceneIndexOf(context, source);
+  const track = await context.application.song.createMidiTrack();
   context.withinTransaction(() => {
-    track.name = `${clipName} bass`;
+    track.name = trackName;
   });
   const slot = await slotOnNewTrack(track, sceneIndex);
   if (!slot) {
     await showDialog(context, renderErrorDialog("The new track reported no clip slots."), 420, 200);
     return;
   }
-  console.log(`pytheory: creating bass clip (${generated.length} beats) at scene ${sceneIndex}`);
-  await fillClip(context, slot, {
+  console.log(`pytheory: creating "${generated.name}" (${generated.length} beats) at scene ${sceneIndex}`);
+  await fillClip(context, slot, generated);
+}
+
+async function generateChordMelody(context: Context, handle: Handle) {
+  const clip = context.getObjectFromHandle(handle, MidiClip);
+  const clipName = clip.name;
+  const notes = await clipNotes(context, clip);
+  if (!notes) return;
+  const params = await showForm(context, renderChordMelodyForm(), 480, 320);
+  if (!params) return;
+  const generated = await analyze<GeneratedClip & { chordTonePercent: number }>(
+    "generate_chord_melody",
+    { notes, ...params },
+  );
+  if (generated.error) {
+    await showDialog(context, renderErrorDialog(generated.error), 420, 200);
+    return;
+  }
+  await placeOnNewTrack(context, clip, `${clipName} melody`, {
     ...generated,
     name: `${clipName} ${generated.name}`,
   });
