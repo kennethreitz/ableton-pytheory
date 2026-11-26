@@ -27,8 +27,12 @@ Right-click any **MIDI clip**:
   candidates ranked by fitness.
 - **Detect Chords** — clusters notes by onset, names each chord
   (`D minor 7th`), gives its lead-sheet symbol (`Dm7`) and Roman numeral
-  function in the detected key (`ii`), and labels cadences (authentic,
-  plagal, deceptive, half).
+  in the detected key (`ii`), and labels cadences (authentic, plagal,
+  deceptive, half). Each chord also gets a role: tonic, pre-dominant, or
+  dominant; applied dominants (`D7` → `V7/V`); and chords borrowed from the
+  parallel key (`A♭` → `bVI`, borrowed from C minor). A "Play over it" column
+  lists the scales that fit each chord. **Name clip by chords** renames the
+  clip to its progression (`C D7 G7 Ab Bb C`).
 - **Analyze Melody** — every note's scale degree in the detected key, plus
   range, degree histogram, how diatonic the line is, and the role of each
   chromatic note (passing, neighbor, or free).
@@ -38,7 +42,8 @@ Right-click any **MIDI clip**:
   and secondary dominants for each chord in the clip.
 - **Guitar Tabs…** — fingering charts for the clip's chords plus a full
   fretboard map of the detected scale, on guitar, ukulele, bass, mandolin,
-  or banjo. Works on melodic clips too.
+  or banjo. Each chord shows up to three grips: open first, then movable
+  shapes up the neck. Works on melodic clips too.
 - **Show Notation** — engraved sheet music for the clip, rendered in the
   dialog (via pytheory's ABC export + abcjs), plus the LilyPond source,
   saved as a `.ly` file and ready to copy.
@@ -56,21 +61,52 @@ Right-click any **MIDI clip**:
 
 - **Harmonize…** — adds diatonic thirds, sixths, full triads, or octaves
   above or below the melody, in the detected key.
-- **Arpeggiate…** — replaces block chords with arpeggios (up, down, or
-  up-and-down at 32nd–quarter rates).
+- **Arpeggiate…** — replaces block chords with arpeggios. Ten patterns (up,
+  down, up-down, down-up, converge, diverge, pinky, thumb, random, repeated
+  chord), 32nd to quarter-note rates, a range of 1 to 4 octaves, swing
+  (100% is a triplet feel), gate length, and a downbeat accent.
+- **Strum…** — rolls block chords like a guitarist: down, up, or alternating
+  strokes, a speed in milliseconds that holds at any tempo, and an optional
+  velocity taper across the strings. Every note still ends where the chord
+  ends.
+- **Humanize…** — loosens a stiff clip, or tightens a loose one. It can
+  quantize to a grid at partial strength, add swing, and drift timing and
+  velocity by small random amounts. It can also hand velocity variation to
+  Live, so the clip changes on every pass. Note lengths are kept, and the
+  same seed gives the same result.
 - **Conform to Scale…** — snaps out-of-scale notes to the nearest scale tone
   (key prefilled from detection), as one undo step.
 - **Transpose to Key…** — scale-degree-aware transposition: C major → C minor
   moves E to E♭, not everything chromatically.
 - **Smooth Voicings** — re-voices each chord (inversions and octaves) to
   minimize voice-leading movement from the previous one.
+- **Voice Chords…** — the full voicing engine, run on the chords already in
+  a clip. Pick a style (close, open, spread, drop 2, drop 3, shell, quartal,
+  as written), an inversion, a register (any MIDI range, and the engine keeps
+  the voicing inside it), and how much voice leading to apply (none, smooth,
+  or tight). You can also put a bass note under each chord, or keep the
+  clip's lowest note in the bass. Ninth and larger chords drop the 5th so
+  they don't turn to mud.
+- **Chordify…** — turns a melody into chords. Every melody note gets a
+  diatonic chord in the detected key: either the note is the chord's root,
+  or the melody stays on top, the way a pianist harmonizes a tune. Chord
+  sizes are triad, seventh, ninth, sus2, sus4, add9, or power chord. If a
+  sus chord isn't diatonic on that degree, it falls back to the other sus,
+  then to a triad.
 - **Invert Melody / Retrograde** — classic motivic transforms: mirror the
   line around its first note (diatonically when in key) or reverse it in
   time. Both are their own inverse — run twice to get back.
 - **Negative Harmony** — mirrors the clip around the key's tonic–dominant
   axis (C major becomes C minor); run it twice to get back.
 - **Generate Bassline…** — follows the clip's chords onto a new MIDI track:
-  roots, root–fifth, arpeggiated, or walking (with chromatic approach notes).
+  roots, root–fifth, arpeggiated, walking (with chromatic approach notes),
+  offbeat (house/disco eighths), octave jumps, or syncopated.
+- **Generate Melody Over Chords…** — writes a topline for the clip's chords
+  onto a new MIDI track. Strong beats land on chord tones and weak beats move
+  by step through the key. Styles: *singable* (stepwise, narrow range),
+  *hook* (a two-bar rhythm repeated, with fresh pitches), and *chord tones*
+  (arpeggio-like). Choose a density, an octave, and whether to leave rests.
+  The dialog reports how much of the line sits on chord tones.
 - **Render to Audio…** — renders the clip with pytheory's synth engine
   (46 instruments) onto a new audio track. No plugins involved.
 
@@ -91,7 +127,13 @@ Right-click an empty **clip slot**:
 - **Generate Progression…** — pick a key, mode, and progression (14 built-ins
   from rock to jazz to flamenco, your own Roman numerals like `I vi ii V7`,
   chord symbols like `Am7 D7 Gmaj7`, or a random walk through the
-  progression corpus) and get a MIDI clip of the chords.
+  progression corpus) and get a MIDI clip of the chords. Numerals can be
+  borrowed or applied: `bVII`, `iv`, `V/V`, `IVmaj7`, `viiø7`, 9ths. A
+  **Recipe** menu fills in ten ready-made progressions (pop, doo-wop, jazz
+  ii–V–I, Andalusian, backdoor…). Then shape the chords with the same
+  voicing controls as Voice Chords, a chord size (triads, sevenths,
+  ninths), and a rhythm: sustain, quarters, offbeat, eighths, sixteenths,
+  dotted, Charleston, or push (chords land an eighth early).
 - **Generate Melody…** — random in-key melodies: mostly stepwise with
   occasional leaps, breathing rests, resolving to the tonic. Pick the
   density from sparse to busy.
@@ -100,6 +142,13 @@ Right-click an empty **clip slot**:
 - **Generate Drum Pattern…** — 100 preset patterns (house, bossa nova,
   teental, drum and bass, second line…) with 37 optional fills, written to
   the General MIDI drum map.
+- **Generate Euclidean Rhythm…** — spreads *k* hits evenly over *n* steps
+  (Bjorklund), with a rotation. *Drums* mode stacks four independent lanes
+  (kick, snare/clap, closed hat, open hat), each with its own hits, steps
+  and rotation, so you get polymeters like 3-against-4. Presets include
+  tresillo, cinquillo, bossa, and West African bell patterns. *Pitched* mode
+  plays the rhythm on notes in a key: root, triad, scale up, random scale
+  tones, or fifths.
 
 <p align="center">
   <img src="docs/screenshots/generate-progression.png" width="60%"
@@ -136,6 +185,13 @@ Python required, nothing to install, fully offline. The build stages the
 Pyodide runtime, a numpy wheel, and the pytheory **0.59.0** sources into `dist/`.
 The required source version is pinned in `pytheory-version.json`; builds reject
 a mismatched checkout. No pytheory wheel or system Python is used at runtime.
+
+Dialogs that ask for a key start from the Set's own key (Live's Scale
+setting). The extension reads Live's scale intervals, so exotic Live scales
+map to the closest pytheory scale: an exact match if one exists, otherwise
+the smallest scale that contains them, preferring major or minor. The
+dialog subtitle names the Live scale it started from, for example
+"(Live: Dorian)".
 
 Pyodide needs dynamic `import()`, which the Extension Host's vm sandbox
 doesn't provide, so the interpreter runs in a worker thread and the extension
@@ -178,7 +234,10 @@ Logs (including `console.log` and uncaught exceptions) land in
 `~/Library/Preferences/Ableton/Live x.x.x/ExtensionHost.txt`.
 
 Run `npm test` to build and exercise the staged sources in Pyodide, including
-chord spelling, symbol generation, and the new interval APIs.
+chord spelling, symbol generation, and the interval APIs. It also runs
+`tests/regression.py`, which covers the voicing engine, progressions, groove
+tools, Euclidean rhythms, melody over chords, and harmony analysis, plus the
+Set-key mapping in `tests/keys.test.ts`.
 
 ## Packaging
 
